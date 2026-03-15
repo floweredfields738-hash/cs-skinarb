@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(curl -s \"http://localhost:5000/api/skins?limit=2\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s \"http://localhost:5000/api/arbitrage?limit=3\")",
+      "Bash(curl -s \"http://localhost:5000/socket.io/?EIO=4&transport=polling\")"
+    ]
+  }
+}
