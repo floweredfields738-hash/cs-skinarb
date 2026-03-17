@@ -7,6 +7,7 @@ import { seedDatabase } from './services/seedData';
 import { startPriceSimulator, stopPriceSimulator } from './services/priceSimulator';
 import { startRealDataSync, stopRealDataSync } from './services/realDataSync';
 import { seedHistoricalCandles, startCandlestickAggregation, stopCandlestickAggregation } from './services/candlestickService';
+import { initTelegramBot } from './services/telegramBot';
 
 dotenv.config();
 
@@ -16,7 +17,7 @@ const USE_REAL_DATA = process.env.USE_REAL_DATA === 'true';
 
 async function startServer() {
   try {
-    logger.info('🚀 Starting CS Skin Intelligence Platform...');
+    logger.info('🚀 Starting CSkinArb...');
     logger.info(`📡 Environment: ${NODE_ENV}`);
 
     // Initialize Database
@@ -80,6 +81,9 @@ async function startServer() {
         logger.info('🎮 Mode: SIMULATION — using price simulator');
         startPriceSimulator();
       }
+
+      // Initialize Telegram bot (if token configured)
+      initTelegramBot().catch(() => {});
 
       // Start candlestick aggregation (converts price_history ticks into OHLC)
       startCandlestickAggregation();

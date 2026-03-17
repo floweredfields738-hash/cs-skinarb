@@ -153,9 +153,51 @@ export async function fetchSkinportPrices(): Promise<Map<string, { price: number
   return priceMap;
 }
 
+// ─── Parse market_hash_name into components ──────────
+function parseHashName(hashName: string): { baseName: string; exterior: string | null; isStatTrak: boolean; isSouvenir: boolean; isKnife: boolean; isGlove: boolean; weaponName: string; skinName: string } {
+  let name = hashName;
+  const isStatTrak = name.startsWith('StatTrak™ ');
+  const isSouvenir = name.startsWith('Souvenir ');
+  if (isStatTrak) name = name.replace('StatTrak™ ', '');
+  if (isSouvenir) name = name.replace('Souvenir ', '');
+
+  // Remove star for knives/gloves
+  name = name.replace(/^★\s*/, '');
+
+  // Extract exterior
+  let exterior: string | null = null;
+  const extMatch = name.match(/\s*\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)\s*$/);
+  if (extMatch) {
+    exterior = extMatch[1];
+    name = name.replace(extMatch[0], '').trim();
+  }
+
+  const knifeNames = ['Knife', 'Bayonet', 'Karambit', 'Daggers', 'Stiletto', 'Navaja', 'Ursus', 'Talon', 'Paracord', 'Survival', 'Nomad', 'Skeleton', 'Kukri', 'Bowie'];
+  const isKnife = knifeNames.some(k => name.includes(k));
+  const isGlove = name.includes('Gloves') || name.includes('Hand Wraps');
+
+  const parts = name.split(' | ');
+  const weaponName = parts[0] || name;
+  const skinName = parts[1] || '';
+
+  return { baseName: name, exterior, isStatTrak, isSouvenir, isKnife, isGlove, weaponName, skinName };
+}
+
+// ─── Determine rarity from price and type ────────────
+function guessRarity(price: number, isKnife: boolean, isGlove: boolean): string {
+  if (isKnife || isGlove) return 'Extraordinary';
+  if (price > 200) return 'Covert';
+  if (price > 50) return 'Classified';
+  if (price > 10) return 'Restricted';
+  if (price > 2) return 'Mil-Spec';
+  if (price > 0.5) return 'Industrial Grade';
+  return 'Consumer Grade';
+}
+
 // ─── Sync Skinport prices to database ────────────────
-export async function syncSkinportPrices(): Promise<{ updated: number; skipped: number }> {
-  const stats = { updated: 0, skipped: 0 };
+// This is the master sync: it auto-creates skins that don't exist in our DB
+export async function syncSkinportPrices(): Promise<{ updated: number; skipped: number; created: number }> {
+  const stats = { updated: 0, skipped: 0, created: 0 };
   const skinportMarketId = 3;
 
   const priceMap = await fetchSkinportPrices();
@@ -164,104 +206,210 @@ export async function syncSkinportPrices(): Promise<{ updated: number; skipped: 
     return stats;
   }
 
-  const skins = await queryMany('SELECT id, name FROM skins ORDER BY id');
-  const EXTERIORS = ['Factory New', 'Minimal Wear', 'Field-Tested', 'Well-Worn', 'Battle-Scarred'];
-
-  for (const skin of skins) {
-    const isKnife = skin.name.includes('Knife') || skin.name.includes('Karambit') || skin.name.includes('Bayonet') || skin.name.includes('Daggers') || skin.name.includes('Kukri');
-    const isGlove = skin.name.includes('Gloves') || skin.name.includes('Wraps');
-    let skinMatched = false;
-
-    // Store a separate price row for EACH exterior — this prevents comparing BS vs FN in arbitrage
-    for (const ext of EXTERIORS) {
-      // Try: "AK-47 | Redline (Field-Tested)" and "★ Karambit | Doppler (Factory New)"
-      const lookups = [`${skin.name} (${ext})`];
-      if (isKnife || isGlove) lookups.push(`★ ${skin.name} (${ext})`);
-
-      for (const lookupName of lookups) {
-        const found = priceMap.get(lookupName);
-        if (!found || found.price <= 0) continue;
-
-        // Build direct URL to this skin's listings on Skinport
-        let directUrl: string;
-        if (found.marketPage) {
-          directUrl = `${found.marketPage}&sort=price&order=asc`;
-        } else {
-          const withoutStar = lookupName.replace(/^★\s*/, '');
-          const withoutExt = withoutStar.replace(/\s*\([^)]+\)\s*$/, '').trim();
-          const parts = withoutExt.split(' | ');
-          directUrl = parts.length === 2
-            ? `https://skinport.com/market?item=${encodeURIComponent(parts[1])}&type=${encodeURIComponent(parts[0])}&sort=price&order=asc`
-            : `https://skinport.com/market?search=${encodeURIComponent(lookupName)}&sort=price&order=asc`;
-        }
-
-        // Upsert: one row per (skin_id, market_id, exterior)
-        const existing = await queryOne(
-          'SELECT id, price FROM market_prices WHERE skin_id = $1 AND market_id = $2 AND exterior = $3',
-          [skin.id, skinportMarketId, ext]
-        );
-
-        if (existing) {
-          await query(
-            `UPDATE market_prices SET price = $1, volume = $2, matched_name = $3, direct_url = $4, exterior = $5, last_updated = NOW()
-             WHERE skin_id = $6 AND market_id = $7 AND exterior = $8`,
-            [found.price, found.volume, lookupName, directUrl, ext, skin.id, skinportMarketId, ext]
-          );
-        } else {
-          await query(
-            `INSERT INTO market_prices (skin_id, market_id, price, volume, matched_name, direct_url, exterior, last_updated)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-            [skin.id, skinportMarketId, found.price, found.volume, lookupName, directUrl, ext]
-          );
-        }
-
-        skinMatched = true;
-        stats.updated++;
-        break; // Only one lookup per exterior
-      }
-    }
-
-    // Also try exact match (vanilla knives etc — no exterior)
-    if (!skinMatched) {
-      const exactLookups = [skin.name];
-      if (isKnife || isGlove) exactLookups.push(`★ ${skin.name}`);
-
-      for (const lookupName of exactLookups) {
-        const found = priceMap.get(lookupName);
-        if (!found || found.price <= 0) continue;
-
-        const directUrl = found.marketPage
-          ? `${found.marketPage}&sort=price&order=asc`
-          : `https://skinport.com/market?search=${encodeURIComponent(lookupName)}&sort=price&order=asc`;
-
-        const existing = await queryOne(
-          'SELECT id FROM market_prices WHERE skin_id = $1 AND market_id = $2 AND exterior IS NULL',
-          [skin.id, skinportMarketId]
-        );
-
-        if (existing) {
-          await query(
-            `UPDATE market_prices SET price = $1, volume = $2, matched_name = $3, direct_url = $4, last_updated = NOW()
-             WHERE skin_id = $5 AND market_id = $6 AND exterior IS NULL`,
-            [found.price, found.volume, lookupName, directUrl, skin.id, skinportMarketId]
-          );
-        } else {
-          await query(
-            `INSERT INTO market_prices (skin_id, market_id, price, volume, matched_name, direct_url, last_updated)
-             VALUES ($1, $2, $3, $4, $5, $6, NOW())`,
-            [skin.id, skinportMarketId, found.price, found.volume, lookupName, directUrl]
-          );
-        }
-
-        skinMatched = true;
-        stats.updated++;
-        break;
-      }
-    }
-
-    if (!skinMatched) stats.skipped++;
+  // Load existing skins into a lookup map: baseName -> id
+  const existingSkins = await queryMany('SELECT id, name FROM skins');
+  const skinLookup = new Map<string, number>();
+  for (const s of existingSkins) {
+    skinLookup.set(s.name, s.id);
   }
 
-  logger.info(`Skinport sync: ${stats.updated} updated, ${stats.skipped} skipped`);
+  // Process EVERY item from Skinport
+  for (const [hashName, data] of priceMap.entries()) {
+    // Only process weapon skins (items with " | " in the name)
+    if (!hashName.includes(' | ')) {
+      stats.skipped++;
+      continue;
+    }
+
+    const parsed = parseHashName(hashName);
+    if (!parsed.baseName || !parsed.skinName) {
+      stats.skipped++;
+      continue;
+    }
+
+    // Build the base name we store in our skins table
+    // StatTrak and Souvenir are variants of the same base skin
+    let dbBaseName = parsed.baseName;
+    let fullName = hashName; // The full market_hash_name including exterior
+
+    // Check if this base skin exists in our DB, if not — create it
+    let skinId = skinLookup.get(dbBaseName);
+    if (!skinId) {
+      // Auto-create the skin
+      try {
+        const result = await queryOne(
+          `INSERT INTO skins (name, weapon_name, skin_name, rarity, min_float, max_float, is_knife, is_glove, has_souvenir, created_at, updated_at)
+           VALUES ($1, $2, $3, $4, 0.0, 1.0, $5, $6, $7, NOW(), NOW())
+           ON CONFLICT (name) DO UPDATE SET updated_at = NOW()
+           RETURNING id`,
+          [dbBaseName, parsed.weaponName, parsed.skinName, guessRarity(data.price, parsed.isKnife, parsed.isGlove), parsed.isKnife, parsed.isGlove, parsed.isSouvenir]
+        );
+        skinId = result?.id;
+        if (skinId) {
+          skinLookup.set(dbBaseName, skinId);
+          stats.created++;
+        }
+      } catch (e: any) {
+        // Might fail on unique constraint race — try to fetch existing
+        const existing = await queryOne('SELECT id FROM skins WHERE name = $1', [dbBaseName]);
+        skinId = existing?.id;
+        if (skinId) skinLookup.set(dbBaseName, skinId);
+      }
+    }
+
+    if (!skinId) {
+      stats.skipped++;
+      continue;
+    }
+
+    // Build direct URL
+    let directUrl: string;
+    if (data.marketPage) {
+      directUrl = `${data.marketPage}&sort=price&order=asc`;
+    } else if (data.itemPage) {
+      directUrl = data.itemPage;
+    } else {
+      directUrl = `https://skinport.com/market?search=${encodeURIComponent(hashName)}&sort=price&order=asc`;
+    }
+
+    // Upsert price row: one per (skin_id, market_id, exterior)
+    const existing = await queryOne(
+      parsed.exterior
+        ? 'SELECT id FROM market_prices WHERE skin_id = $1 AND market_id = $2 AND exterior = $3'
+        : 'SELECT id FROM market_prices WHERE skin_id = $1 AND market_id = $2 AND exterior IS NULL',
+      parsed.exterior ? [skinId, skinportMarketId, parsed.exterior] : [skinId, skinportMarketId]
+    );
+
+    if (existing) {
+      await query(
+        parsed.exterior
+          ? `UPDATE market_prices SET price = $1, volume = $2, matched_name = $3, direct_url = $4, last_updated = NOW()
+             WHERE skin_id = $5 AND market_id = $6 AND exterior = $7`
+          : `UPDATE market_prices SET price = $1, volume = $2, matched_name = $3, direct_url = $4, last_updated = NOW()
+             WHERE skin_id = $5 AND market_id = $6 AND exterior IS NULL`,
+        parsed.exterior
+          ? [data.price, data.volume, fullName, directUrl, skinId, skinportMarketId, parsed.exterior]
+          : [data.price, data.volume, fullName, directUrl, skinId, skinportMarketId]
+      );
+    } else {
+      await query(
+        `INSERT INTO market_prices (skin_id, market_id, price, volume, matched_name, direct_url, exterior, last_updated)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
+        [skinId, skinportMarketId, data.price, data.volume, fullName, directUrl, parsed.exterior || null]
+      );
+    }
+
+    stats.updated++;
+  }
+
+  logger.info(`Skinport sync: ${stats.updated} updated, ${stats.created} new skins created, ${stats.skipped} skipped`);
   return stats;
+}
+
+// ─── Sync REAL historical sales data from Skinport ───
+export async function syncSkinportHistory(): Promise<number> {
+  try {
+    logger.info('▶ Fetching real sales history from Skinport...');
+
+    const response = await axios.get(`${SKINPORT_BASE}/sales/history`, {
+      params: { app_id: 730, currency: 'USD' },
+      headers: {
+        'Accept-Encoding': 'br, gzip',
+        'User-Agent': 'CSkinArb/1.0',
+      },
+      timeout: 30000,
+    });
+
+    const items = response.data;
+    if (!Array.isArray(items)) {
+      logger.warn('Skinport history: unexpected response format');
+      return 0;
+    }
+
+    logger.info(`Skinport history: ${items.length} items received`);
+
+    // Build skin name → id lookup
+    const skins = await queryMany('SELECT id, name FROM skins');
+    const skinLookup = new Map<string, number>();
+    for (const s of skins) {
+      skinLookup.set(s.name.toLowerCase(), s.id);
+    }
+
+    let updated = 0;
+
+    for (const item of items) {
+      const fullName = item.market_hash_name;
+      if (!fullName) continue;
+
+      const d30 = item.last_30_days;
+      const d7 = item.last_7_days;
+      const d24 = item.last_24_hours;
+      const d90 = item.last_90_days;
+
+      // Skip items with no sales data
+      if (!d30?.volume && !d7?.volume) continue;
+
+      // Match to our skin (strip exterior for base name match)
+      const baseName = fullName.replace(/\s*\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)\s*$/i, '').trim();
+      const skinId = skinLookup.get(baseName.toLowerCase());
+      if (!skinId) continue;
+
+      // Calculate real volatility from 30d data
+      const volatility = d30?.avg > 0 ? Math.round(((d30.max - d30.min) / d30.avg) * 100 * 100) / 100 : 0;
+
+      // Upsert price_statistics with REAL data
+      await query(
+        `INSERT INTO price_statistics (skin_id, avg_price_7d, avg_price_30d, min_price_7d, max_price_7d,
+           min_price_30d, max_price_30d, price_volatility, trading_volume_7d, trading_volume_30d, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
+         ON CONFLICT (skin_id) DO UPDATE SET
+           avg_price_7d = $2, avg_price_30d = $3, min_price_7d = $4, max_price_7d = $5,
+           min_price_30d = $6, max_price_30d = $7, price_volatility = $8,
+           trading_volume_7d = $9, trading_volume_30d = $10, updated_at = NOW()`,
+        [
+          skinId,
+          d7?.avg || d30?.avg || 0,
+          d30?.avg || 0,
+          d7?.min || d30?.min || 0,
+          d7?.max || d30?.max || 0,
+          d30?.min || 0,
+          d30?.max || 0,
+          volatility,
+          d7?.volume || 0,
+          d30?.volume || 0,
+        ]
+      );
+
+      // Also insert synthetic price_history points so charts have real data
+      // Create 4 points: 90d ago, 30d ago, 7d ago, now
+      const now = Date.now();
+      const points = [
+        { time: now - 90 * 86400000, price: d90?.median || d90?.avg },
+        { time: now - 30 * 86400000, price: d30?.median || d30?.avg },
+        { time: now - 7 * 86400000, price: d7?.median || d7?.avg },
+        { time: now - 86400000, price: d24?.median || d24?.avg },
+      ].filter(pt => pt.price && pt.price > 0);
+
+      for (const pt of points) {
+        await query(
+          `INSERT INTO price_history (skin_id, market_id, price, timestamp)
+           VALUES ($1, 3, $2, to_timestamp($3))
+           ON CONFLICT DO NOTHING`,
+          [skinId, pt.price, pt.time / 1000]
+        ).catch(() => {}); // ignore conflicts
+      }
+
+      updated++;
+    }
+
+    logger.info(`✓ Skinport history: ${updated} skins updated with real 7d/30d/90d sales data`);
+    return updated;
+  } catch (error: any) {
+    if (error.response?.status === 429) {
+      logger.warn('Skinport history: rate limited, will retry next cycle');
+    } else {
+      logger.error(`Skinport history error: ${error.message}`);
+    }
+    return 0;
+  }
 }

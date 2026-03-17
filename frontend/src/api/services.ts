@@ -92,6 +92,20 @@ export const alertsApi = {
     client.post(`/alerts/${alertId}/test`),
 };
 
+// ─── Watchlist ──────────────────────────────────────
+export const watchlistApi = {
+  get: () =>
+    client.get('/watchlist'),
+  add: (skinId: number, targetPrice?: number) =>
+    client.post('/watchlist/add', { skinId, targetPrice }),
+  remove: (skinId: number) =>
+    client.delete(`/watchlist/remove/${skinId}`),
+  check: (skinId: number) =>
+    client.get(`/watchlist/check/${skinId}`),
+  updateTarget: (skinId: number, targetPrice: number | null) =>
+    client.put(`/watchlist/target/${skinId}`, { targetPrice }),
+};
+
 // ─── Auth ────────────────────────────────────────────
 export const authApi = {
   getMe: () =>

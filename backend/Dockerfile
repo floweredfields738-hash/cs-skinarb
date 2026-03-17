@@ -1,18 +1,21 @@
-FROM node:18-alpine
-
+# force 1773771244
+FROM node:20-alpine
 WORKDIR /app
-
-# Copy package files
 COPY package*.json ./
-
-# Install dependencies
-RUN npm ci
-
-# Copy source code
+RUN npm install --production=false
 COPY . .
-
-# Expose port
 EXPOSE 5000
-
-# Start application (overridden by docker-compose for dev)
-CMD ["npm", "run", "dev"]
+CMD ["npx", "tsx", "src/server.ts"]
+# 1773771667
+# 1773772804
+# 1773773855
+# 1773774202
+# 1773774437
+# 1773775003
+# 1773775958
+# 1773776886
+# 1773780699
+# 1773782000
+# 1773782425
+# 1773783141
+# 1773785925

@@ -1,22 +1,33 @@
-import React, { useEffect } from 'react';
+import React, { useEffect, lazy, Suspense } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { useDispatch } from 'react-redux';
 import { setUser, setLoading } from './store/slices/authSlice';
-
-// Pages
-import Dashboard from './pages/Dashboard';
-import SkinDetail from './pages/SkinDetail';
-import Portfolio from './pages/Portfolio';
-import Arbitrage from './pages/Arbitrage';
-import Watchlist from './pages/Watchlist';
-import Alerts from './pages/Alerts';
-import Settings from './pages/Settings';
-import MarketMonitor from './pages/MarketMonitor';
-import Login from './pages/Login';
-import AuthCallback from './pages/AuthCallback';
-
-// Components
 import Layout from './components/common/Layout';
+
+// Lazy-load all pages — only download when visited
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const SkinDetail = lazy(() => import('./pages/SkinDetail'));
+const Portfolio = lazy(() => import('./pages/Portfolio'));
+const Arbitrage = lazy(() => import('./pages/Arbitrage'));
+const Watchlist = lazy(() => import('./pages/Watchlist'));
+const Alerts = lazy(() => import('./pages/Alerts'));
+const Settings = lazy(() => import('./pages/Settings'));
+const MarketMonitor = lazy(() => import('./pages/MarketMonitor'));
+const Cases = lazy(() => import('./pages/Cases'));
+const InventoryHub = lazy(() => import('./pages/InventoryHub'));
+const TradeJournal = lazy(() => import('./pages/TradeJournal'));
+const Calculators = lazy(() => import('./pages/Calculators'));
+const Chats = lazy(() => import('./pages/Chats'));
+const Marketplace = lazy(() => import('./pages/Marketplace'));
+const Copying = lazy(() => import('./pages/Copying'));
+const Login = lazy(() => import('./pages/Login'));
+const AuthCallback = lazy(() => import('./pages/AuthCallback'));
+
+const PageLoader = () => (
+  <div className="flex items-center justify-center min-h-[50vh]">
+    <div className="w-8 h-8 border-2 border-cyan-glow/30 border-t-cyan-glow rounded-full animate-spin" />
+  </div>
+);
 
 const App: React.FC = () => {
   const dispatch = useDispatch();
@@ -42,32 +53,42 @@ const App: React.FC = () => {
         dispatch(setLoading(false));
       }
     };
-
     checkAuth();
   }, [dispatch]);
 
   return (
     <Router>
-      <Routes>
-        {/* Public routes */}
-        <Route path="/login" element={<Login />} />
-        <Route path="/auth/callback" element={<AuthCallback />} />
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          {/* Auth */}
+          <Route path="/login" element={<Login />} />
+          <Route path="/auth/callback" element={<AuthCallback />} />
+          <Route path="/auth/verify-email" element={<AuthCallback />} />
+          <Route path="/auth/magic-link" element={<AuthCallback />} />
 
-        {/* Main app routes - accessible without auth */}
-        <Route element={<Layout />}>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/skins/:id" element={<SkinDetail />} />
-          <Route path="/portfolio" element={<Portfolio />} />
-          <Route path="/arbitrage" element={<Arbitrage />} />
-          <Route path="/watchlist" element={<Watchlist />} />
-          <Route path="/alerts" element={<Alerts />} />
-          <Route path="/market-monitor" element={<MarketMonitor />} />
-          <Route path="/settings" element={<Settings />} />
-        </Route>
+          {/* App */}
+          <Route element={<Layout />}>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/dashboard" element={<Dashboard />} />
+            <Route path="/market-monitor" element={<MarketMonitor />} />
+            <Route path="/arbitrage" element={<Arbitrage />} />
+            <Route path="/portfolio" element={<Portfolio />} />
+            <Route path="/trades" element={<TradeJournal />} />
+            <Route path="/inventory" element={<InventoryHub />} />
+            <Route path="/calculators" element={<Calculators />} />
+            <Route path="/cases" element={<Cases />} />
+            <Route path="/watchlist" element={<Watchlist />} />
+            <Route path="/alerts" element={<Alerts />} />
+            <Route path="/chats" element={<Chats />} />
+            <Route path="/marketplace" element={<Marketplace />} />
+            <Route path="/copying" element={<Copying />} />
+            <Route path="/settings" element={<Settings />} />
+            <Route path="/skins/:id" element={<SkinDetail />} />
+          </Route>
 
-        {/* Fallback */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Routes>
+          <Route path="*" element={<Navigate to="/" replace />} />
+        </Routes>
+      </Suspense>
     </Router>
   );
 };

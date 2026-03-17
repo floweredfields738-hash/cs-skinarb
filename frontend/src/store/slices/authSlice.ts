@@ -5,6 +5,10 @@ interface User {
   steam_id: string;
   username: string;
   avatar_url?: string;
+  created_at?: string;
+  email?: string;
+  premium_tier?: string;
+  premium_expires?: string;
 }
 
 export interface AuthState {

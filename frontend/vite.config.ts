@@ -9,9 +9,15 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'http://localhost:5000',
+        target: 'https://cs-skin-backend-production.up.railway.app',
         changeOrigin: true,
-        rewrite: (path) => path.replace(/^\/api/, ''),
+        secure: true,
+      },
+      '/socket.io': {
+        target: 'https://cs-skin-backend-production.up.railway.app',
+        changeOrigin: true,
+        ws: true,
+        secure: false,
       },
     },
   },

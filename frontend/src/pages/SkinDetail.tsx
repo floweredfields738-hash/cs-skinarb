@@ -19,84 +19,29 @@ import {
   Layers,
 } from 'lucide-react';
 import { useLiveSkinPrices, useLivePriceFeed, useConnectionStatus } from '../hooks/useRealTimeData';
-import { skinsApi } from '../api/services';
+import { skinsApi, watchlistApi } from '../api/services';
 import CandlestickChart from '../components/dashboard/CandlestickChart';
+import CrossMarketComparison from '../components/dashboard/CrossMarketComparison';
 
-// ── Fallback Mock Data ───────────────────────────────────────────────────────
-
-const MOCK_SKIN = {
-  id: 'ak47-phantom-disruptor-fn',
-  name: 'AK-47 | Phantom Disruptor',
-  weapon_name: 'AK-47',
-  skin_name: 'Phantom Disruptor',
-  rarity: 'Covert',
-  rarity_color: '#eb4b4b',
-  collection: 'Control Collection',
-  exterior: 'Factory New',
-  float_value: 0.0312,
-  float_min: 0.0,
-  float_max: 0.5,
-  current_price: 142.5,
-  previous_price: 127.85,
-  change_24h: 8.95,
-  price_change_24h: 11.45,
-  volume_24h: 487,
-  high_24h: 148.2,
-  low_24h: 125.6,
-  all_time_high: 192.0,
-  all_time_low: 68.5,
+// ── Safe formatters (prevent null crashes) ───────────────────────────────────
+const fmt = (v: any, decimals = 2): string => {
+  if (v === null || v === undefined || isNaN(v)) return '—';
+  return Number(v).toFixed(decimals);
 };
-
-const MOCK_AI_ANALYSIS = {
-  opportunityScore: 87,
-  recommendation: 'Strong Buy' as const,
-  confidence: 92,
-  predictedPrice7d: 158.4,
-  predictedPrice30d: 178.2,
-  reasons: [
-    'Price is 12% below 30-day moving average',
-    'Volume spike indicates renewed interest',
-    'Similar skins in collection trending upward',
-    'Float value places this in top 15% of listings',
-  ],
+const fmtPct = (v: any, decimals = 1): string => {
+  if (v === null || v === undefined || isNaN(v)) return '—%';
+  const n = Number(v);
+  return (n >= 0 ? '+' : '') + n.toFixed(decimals) + '%';
 };
+const safeLower = (v: any): string => (v || '').toString().toLowerCase();
 
-const MOCK_TECHNICALS = {
-  ma7d: 148.6,
-  ma30d: 156.2,
-  volatility: 14.8,
-  trendDirection: 'up' as const,
-  rsi: 38.5,
-  support: 128.0,
-  resistance: 165.0,
-};
-
+// ── Market ID mapping ────────────────────────────────────────────────────────
 const MARKET_ID_MAP: Record<number, { name: string; logo: string; fee: number }> = {
   1: { name: 'Steam', logo: '\u{1F7E6}', fee: 13.0 },
   2: { name: 'Buff163', logo: '\u{1F7E7}', fee: 2.5 },
   3: { name: 'Skinport', logo: '\u{1F7EA}', fee: 6.0 },
   4: { name: 'CSFloat', logo: '\u{1F7E9}', fee: 3.0 },
 };
-
-const MOCK_MARKETS = [
-  { name: 'Steam', price: 149.99, volume: 142, fee: 13.0, logo: '\u{1F7E6}', market_id: 1 },
-  { name: 'Buff163', price: 135.2, volume: 218, fee: 2.5, logo: '\u{1F7E7}', market_id: 2 },
-  { name: 'Skinport', price: 139.85, volume: 87, fee: 6.0, logo: '\u{1F7EA}', market_id: 3 },
-  { name: 'CSFloat', price: 137.1, volume: 40, fee: 3.0, logo: '\u{1F7E9}', market_id: 4 },
-];
-
-function generateMockPriceData(count: number, endPrice: number): number[] {
-  const base = 130;
-  const points: number[] = [];
-  let current = base;
-  for (let i = 0; i < count; i++) {
-    current += (Math.random() - 0.45) * 6;
-    current = Math.max(100, Math.min(165, current));
-    points.push(current);
-  }
-  points[points.length - 1] = endPrice;
-  return points;
-}
 
 // ── Helper Components ────────────────────────────────────────────────────────
 
@@ -161,7 +106,7 @@ function PriceChart({ data, activeRange, onRangeChange, currentPrice, changePct,
         </div>
         <div className="text-right">
           <div className="flex items-center gap-2 justify-end">
-            <span className="text-xl font-bold font-mono text-white">${currentPrice.toFixed(2)}</span>
+            <span className="text-xl font-bold font-mono text-white">${fmt(currentPrice)}</span>
             {isConnected && <LiveIndicator />}
           </div>
           <div className="flex items-center gap-1 justify-end mt-0.5">
@@ -172,7 +117,7 @@ function PriceChart({ data, activeRange, onRangeChange, currentPrice, changePct,
               'text-[11px] font-bold font-mono',
               changePct >= 0 ? 'text-emerald-400' : 'text-red-400'
             )}>
-              {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+              {fmtPct(changePct)}
             </span>
           </div>
         </div>
@@ -194,7 +139,7 @@ function PriceChart({ data, activeRange, onRangeChange, currentPrice, changePct,
         {/* Y-axis labels */}
         <div className="absolute left-5 top-4 bottom-4 flex flex-col justify-between">
           {[maxVal, (maxVal + minVal) / 2, minVal].map((v, i) => (
-            <span key={i} className="text-[9px] font-mono text-gray-600">${v.toFixed(0)}</span>
+            <span key={i} className="text-[9px] font-mono text-gray-600">${fmt(v, 0)}</span>
           ))}
         </div>
 
@@ -291,9 +236,9 @@ function FloatBar({ value, min, max }: { value: number; min: number; max: number
   return (
     <div>
       <div className="flex items-center justify-between mb-1.5">
-        <span className="text-[10px] text-gray-500 font-mono">{min.toFixed(2)}</span>
-        <span className="text-[11px] text-cyan-glow font-mono font-bold">{value.toFixed(4)}</span>
-        <span className="text-[10px] text-gray-500 font-mono">{max.toFixed(2)}</span>
+        <span className="text-[10px] text-gray-500 font-mono">{fmt(min)}</span>
+        <span className="text-[11px] text-cyan-glow font-mono font-bold">{fmt(value, 4)}</span>
+        <span className="text-[10px] text-gray-500 font-mono">{fmt(max)}</span>
       </div>
       <div className="relative h-2.5 rounded-full overflow-hidden flex">
         {zones.map((zone, i) => {
@@ -323,6 +268,49 @@ function FloatBar({ value, min, max }: { value: number; min: number; max: number
         ))}
       </div>
     </div>
+  );
+}
+
+// ── Watchlist Button ─────────────────────────────────────────────────────────
+
+function WatchlistButton({ skinId }: { skinId: number }) {
+  const [inWatchlist, setInWatchlist] = useState(false);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!skinId) return;
+    watchlistApi.check(skinId).then(res => {
+      if (res.data?.success) setInWatchlist(res.data.inWatchlist);
+    }).catch(() => {});
+  }, [skinId]);
+
+  const toggle = async () => {
+    setLoading(true);
+    try {
+      if (inWatchlist) {
+        await watchlistApi.remove(skinId);
+        setInWatchlist(false);
+      } else {
+        await watchlistApi.add(skinId);
+        setInWatchlist(true);
+      }
+    } catch {}
+    setLoading(false);
+  };
+
+  return (
+    <button
+      onClick={toggle}
+      disabled={loading}
+      className={`glass-panel-subtle px-3 py-2 flex items-center gap-2 transition-all ${
+        inWatchlist ? 'border-gold-400/30 bg-gold-400/[0.08]' : 'hover:border-gold-400/20'
+      }`}
+    >
+      <Star className={`w-3.5 h-3.5 ${inWatchlist ? 'text-gold-400 fill-gold-400' : 'text-gray-500'}`} />
+      <span className={`text-[11px] font-mono ${inWatchlist ? 'text-gold-400' : 'text-gray-400'}`}>
+        {inWatchlist ? 'Watching' : 'Watch'}
+      </span>
+    </button>
   );
 }
 
@@ -440,27 +428,27 @@ const SkinDetail: React.FC = () => {
     return undefined;
   }, [livePrices]);
 
-  // ── Resolved data (API or fallback) ──
-  const s = skin || MOCK_SKIN;
+  // ── Resolved data (real API data only — no mock fallbacks) ──
+  const s = skin || {} as any;
   const weaponName = s.weapon_name || s.weapon || 'Unknown';
   const skinName = s.skin_name || s.skinName || 'Unknown';
-  const rarity = s.rarity || 'Covert';
-  const rarityColor = s.rarity_color || s.rarityColor || '#eb4b4b';
-  const collection = s.collection || 'Unknown Collection';
-  const exterior = s.exterior || 'Factory New';
-  const floatValue = s.float_value ?? s.floatValue ?? 0.0312;
+  const rarity = s.rarity || 'Unknown';
+  const rarityColor = s.rarity_color || s.rarityColor || '#6b7280';
+  const collection = s.collection || s.case_name || '';
+  const exterior = s.exterior || '';
+  const floatValue = s.float_value ?? s.floatValue ?? null;
   const floatMin = s.float_min ?? s.floatMin ?? 0.0;
-  const floatMax = s.float_max ?? s.floatMax ?? 0.5;
-  const currentPrice = s.current_price ?? s.currentPrice ?? 142.5;
+  const floatMax = s.float_max ?? s.floatMax ?? 1.0;
+  const currentPrice = s.current_price ?? s.currentPrice ?? 0;
   const changePct = s.change_24h ?? s.changePct24h ?? 0;
-  const priceChange = s.price_change_24h ?? s.change24h ?? (currentPrice * changePct / 100);
+  const priceChange = s.price_change_24h ?? s.change24h ?? 0;
   const volume24h = s.volume_24h ?? s.volume24h ?? 0;
-  const high24h = s.high_24h ?? s.highPrice24h ?? currentPrice;
-  const low24h = s.low_24h ?? s.lowPrice24h ?? currentPrice;
-  const ath = s.all_time_high ?? s.allTimeHigh ?? currentPrice;
-  const atl = s.all_time_low ?? s.allTimeLow ?? currentPrice;
+  const high24h = s.high_24h ?? s.highPrice24h ?? null;
+  const low24h = s.low_24h ?? s.lowPrice24h ?? null;
+  const ath = s.all_time_high ?? s.allTimeHigh ?? null;
+  const atl = s.all_time_low ?? s.allTimeLow ?? null;
 
-  // ── Market data ──
+  // ── Market data (real only) ──
   const markets = livePrices.length > 0
     ? livePrices.map((p: any) => {
         const info = MARKET_ID_MAP[p.market_id] || { name: `Market ${p.market_id}`, logo: '\u{2B1C}', fee: 5.0 };
@@ -474,35 +462,37 @@ const SkinDetail: React.FC = () => {
           last_updated: p.last_updated,
         };
       })
-    : MOCK_MARKETS;
+    : [];
 
-  const bestMarket = markets.reduce((best, m) => {
-    const net = m.price * (1 - m.fee / 100);
-    const bestNet = best.price * (1 - best.fee / 100);
-    return net < bestNet ? m : best;
-  }, markets[0]);
+  const bestMarket = markets.length > 0
+    ? markets.reduce((best, m) => {
+        const net = m.price * (1 - m.fee / 100);
+        const bestNet = best.price * (1 - best.fee / 100);
+        return net < bestNet ? m : best;
+      }, markets[0])
+    : null;
 
-  // ── Chart data ──
-  const chartData = priceHistory.length >= 2 ? priceHistory : generateMockPriceData(30, currentPrice);
+  // ── Chart data (real only) ──
+  const chartData = priceHistory.length >= 2 ? priceHistory : [];
 
-  // ── AI Analysis (API or fallback) ──
-  const analysis = aiAnalysis || MOCK_AI_ANALYSIS;
-  const oppScore = analysis.opportunityScore ?? analysis.opportunity_score ?? MOCK_AI_ANALYSIS.opportunityScore;
-  const recommendation = analysis.recommendation ?? MOCK_AI_ANALYSIS.recommendation;
-  const confidence = analysis.confidence ?? MOCK_AI_ANALYSIS.confidence;
-  const predicted7d = analysis.predictedPrice7d ?? analysis.predicted_price_7d ?? MOCK_AI_ANALYSIS.predictedPrice7d;
-  const predicted30d = analysis.predictedPrice30d ?? analysis.predicted_price_30d ?? MOCK_AI_ANALYSIS.predictedPrice30d;
-  const reasons = analysis.reasons ?? analysis.key_signals ?? MOCK_AI_ANALYSIS.reasons;
+  // ── AI Analysis (real only — no fake scores) ──
+  const analysis = aiAnalysis || {} as any;
+  const oppScore = analysis.opportunityScore ?? analysis.opportunity_score ?? null;
+  const recommendation = analysis.recommendation ?? null;
+  const confidence = analysis.confidence ?? null;
+  const predicted7d = analysis.predictedPrice7d ?? analysis.predicted_price_7d ?? null;
+  const predicted30d = analysis.predictedPrice30d ?? analysis.predicted_price_30d ?? null;
+  const reasons = analysis.reasons ?? analysis.key_signals ?? [];
 
-  // ── Technicals (API or fallback) ──
+  // ── Technicals (real only) ──
   const tech = aiAnalysis?.technicals || aiAnalysis || {};
-  const ma7d = tech.ma7d ?? tech.ma_7d ?? MOCK_TECHNICALS.ma7d;
-  const ma30d = tech.ma30d ?? tech.ma_30d ?? MOCK_TECHNICALS.ma30d;
-  const volatility = tech.volatility ?? MOCK_TECHNICALS.volatility;
-  const trendDirection = tech.trendDirection ?? tech.trend_direction ?? MOCK_TECHNICALS.trendDirection;
-  const rsi = tech.rsi ?? MOCK_TECHNICALS.rsi;
-  const support = tech.support ?? MOCK_TECHNICALS.support;
-  const resistance = tech.resistance ?? MOCK_TECHNICALS.resistance;
+  const ma7d = tech.ma7d ?? tech.ma_7d ?? null;
+  const ma30d = tech.ma30d ?? tech.ma_30d ?? null;
+  const volatility = tech.volatility ?? null;
+  const trendDirection = tech.trendDirection ?? tech.trend_direction ?? null;
+  const rsi = tech.rsi ?? null;
+  const support = tech.support ?? null;
+  const resistance = tech.resistance ?? null;
 
   // ── Time since last refresh ──
   const [secondsAgo, setSecondsAgo] = useState(0);
@@ -514,9 +504,9 @@ const SkinDetail: React.FC = () => {
   }, [lastRefresh]);
 
   // ── Recommendation color ──
-  const recColor = recommendation.toLowerCase().includes('buy')
+  const recColor = safeLower(recommendation).includes('buy')
     ? 'text-emerald-400'
-    : recommendation.toLowerCase().includes('sell')
+    : safeLower(recommendation).includes('sell')
     ? 'text-red-400'
     : 'text-yellow-400';
 
@@ -543,7 +533,7 @@ const SkinDetail: React.FC = () => {
           <span>Back</span>
         </Link>
         <span className="text-gray-700">/</span>
-        <span className="text-[11px] text-gray-500 font-mono">{id || MOCK_SKIN.id}</span>
+        <span className="text-[11px] text-gray-500 font-mono">{id || '—'}</span>
       </div>
 
       {/* ═══════════════ HERO SECTION ═══════════════ */}
@@ -569,13 +559,14 @@ const SkinDetail: React.FC = () => {
               <p className="text-xl text-gray-400 mt-1">{skinName}</p>
             </div>
             <div className="flex items-center gap-4 flex-wrap">
+              <WatchlistButton skinId={typeof s.id === 'number' ? s.id : parseInt(id || '0')} />
               <div className="glass-panel-subtle px-3 py-2 flex items-center gap-2">
                 <Shield className="w-3.5 h-3.5 text-cyan-glow/60" />
                 <span className="text-[11px] font-mono text-gray-300">{exterior}</span>
               </div>
               <div className="glass-panel-subtle px-3 py-2 flex items-center gap-2">
                 <Layers className="w-3.5 h-3.5 text-gold-400/60" />
-                <span className="text-[11px] font-mono text-gray-300">Float: {floatValue.toFixed(4)}</span>
+                <span className="text-[11px] font-mono text-gray-300">Float: {fmt(floatValue, 4)}</span>
               </div>
               <div className="glass-panel-subtle px-3 py-2 flex items-center gap-2">
                 <BarChart3 className="w-3.5 h-3.5 text-gray-500" />
@@ -596,7 +587,7 @@ const SkinDetail: React.FC = () => {
                 <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Current Price</p>
                 {isConnected && <LiveIndicator />}
               </div>
-              <h2 className="text-4xl font-bold font-mono text-white tracking-tight">${currentPrice.toFixed(2)}</h2>
+              <h2 className="text-4xl font-bold font-mono text-white tracking-tight">${fmt(currentPrice)}</h2>
             </div>
             <div className="flex items-center justify-end gap-2">
               <div className={clsx(
@@ -608,20 +599,20 @@ const SkinDetail: React.FC = () => {
                 {changePct >= 0
                   ? <ArrowUpRight className="w-3.5 h-3.5" />
                   : <ArrowDownRight className="w-3.5 h-3.5" />}
-                {changePct >= 0 ? '+' : ''}{changePct.toFixed(2)}%
+                {fmtPct(changePct)}
               </div>
               <span className="text-[11px] text-gray-500 font-mono">
-                {priceChange >= 0 ? '+' : ''}${priceChange.toFixed(2)}
+                {priceChange >= 0 ? '+' : ''}${fmt(priceChange)}
               </span>
             </div>
 
             {/* Quick stats */}
             <div className="space-y-2 pt-2 border-t border-white/[0.04]">
               {[
-                { label: '24h High', value: `$${high24h.toFixed(2)}` },
-                { label: '24h Low', value: `$${low24h.toFixed(2)}` },
-                { label: 'ATH', value: `$${ath.toFixed(2)}` },
-                { label: 'ATL', value: `$${atl.toFixed(2)}` },
+                { label: '24h High', value: `$${fmt(high24h)}` },
+                { label: '24h Low', value: `$${fmt(low24h)}` },
+                { label: 'ATH', value: `$${fmt(ath)}` },
+                { label: 'ATL', value: `$${fmt(atl)}` },
               ].map((stat) => (
                 <div key={stat.label} className="flex items-center justify-between text-[11px]">
                   <span className="text-gray-500">{stat.label}</span>
@@ -698,6 +689,9 @@ const SkinDetail: React.FC = () => {
           )}
         </div>
 
+        {/* Cross-Market Comparison */}
+        <CrossMarketComparison skinId={typeof s.id === 'number' ? s.id : parseInt(id || '1')} skinName={`${weaponName} | ${skinName}`} />
+
         {/* AI Analysis */}
         <div className="glass-panel p-6 flex flex-col">
           <div className="flex items-center gap-3 mb-5">
@@ -706,7 +700,7 @@ const SkinDetail: React.FC = () => {
             </div>
             <div>
               <h2 className="text-base font-bold text-white">AI Analysis</h2>
-              <p className="text-[11px] text-gray-500 font-mono mt-0.5">ML Model v3.2</p>
+              <p className="text-[11px] text-gray-500 font-mono mt-0.5">Statistical Analysis</p>
             </div>
             <div className="ml-auto neon-dot-gold" />
           </div>
@@ -740,22 +734,22 @@ const SkinDetail: React.FC = () => {
           <div className="grid grid-cols-2 gap-3 mb-5">
             <div className="glass-panel-subtle p-3">
               <p className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">7-Day Target</p>
-              <p className="text-lg font-bold font-mono text-white">${predicted7d.toFixed(2)}</p>
+              <p className="text-lg font-bold font-mono text-white">${fmt(predicted7d)}</p>
               <span className={clsx(
                 'text-[10px] font-mono',
                 predicted7d >= currentPrice ? 'text-emerald-400' : 'text-red-400'
               )}>
-                {predicted7d >= currentPrice ? '+' : ''}{((predicted7d / currentPrice - 1) * 100).toFixed(1)}%
+                {predicted7d >= currentPrice ? '+' : ''}{fmt(currentPrice > 0 ? (predicted7d / currentPrice - 1) * 100 : 0, 1)}%
               </span>
             </div>
             <div className="glass-panel-subtle p-3">
               <p className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">30-Day Target</p>
-              <p className="text-lg font-bold font-mono text-white">${predicted30d.toFixed(2)}</p>
+              <p className="text-lg font-bold font-mono text-white">${fmt(predicted30d)}</p>
               <span className={clsx(
                 'text-[10px] font-mono',
                 predicted30d >= currentPrice ? 'text-emerald-400' : 'text-red-400'
               )}>
-                {predicted30d >= currentPrice ? '+' : ''}{((predicted30d / currentPrice - 1) * 100).toFixed(1)}%
+                {predicted30d >= currentPrice ? '+' : ''}{fmt(currentPrice > 0 ? (predicted30d / currentPrice - 1) * 100 : 0, 1)}%
               </span>
             </div>
           </div>
@@ -763,7 +757,7 @@ const SkinDetail: React.FC = () => {
           {/* Reasons */}
           <div className="space-y-2 flex-1">
             <p className="text-[10px] text-gray-500 uppercase tracking-wider font-semibold">Key Signals</p>
-            {(Array.isArray(reasons) ? reasons : MOCK_AI_ANALYSIS.reasons).map((reason: string, i: number) => (
+            {(Array.isArray(reasons) && reasons.length > 0 ? reasons : ['No analysis data available yet']).map((reason: string, i: number) => (
               <div key={i} className="flex items-start gap-2">
                 <div className="neon-dot mt-1.5 flex-shrink-0" style={{ width: 5, height: 5 }} />
                 <span className="text-[11px] text-gray-400 leading-relaxed">{reason}</span>
@@ -805,7 +799,7 @@ const SkinDetail: React.FC = () => {
               <tbody>
                 {markets.map((market) => {
                   const netPrice = market.price * (1 - market.fee / 100);
-                  const isBest = market.name === bestMarket.name;
+                  const isBest = bestMarket ? market.name === bestMarket.name : false;
                   const isFlashing = flashMarkets.has(market.market_id);
                   return (
                     <tr
@@ -829,7 +823,7 @@ const SkinDetail: React.FC = () => {
                           'font-mono text-[13px] transition-all duration-500',
                           isFlashing ? 'text-cyan-glow scale-110' : 'text-gray-300'
                         )}>
-                          ${market.price.toFixed(2)}
+                          ${fmt(market.price)}
                         </span>
                       </td>
                       <td className="py-4 text-right">
@@ -844,7 +838,7 @@ const SkinDetail: React.FC = () => {
                           isBest ? 'text-cyan-glow' : 'text-gray-300',
                           isFlashing && 'text-cyan-glow'
                         )}>
-                          ${netPrice.toFixed(2)}
+                          ${fmt(netPrice)}
                         </span>
                       </td>
                       <td className="py-4 text-right">
@@ -883,7 +877,7 @@ const SkinDetail: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">7-Day MA</p>
-                  <p className="text-base font-bold font-mono text-white mt-0.5">${ma7d.toFixed(2)}</p>
+                  <p className="text-base font-bold font-mono text-white mt-0.5">${fmt(ma7d)}</p>
                 </div>
                 <div className={clsx(
                   'px-1.5 py-0.5 rounded text-[10px] font-bold font-mono',
@@ -897,7 +891,7 @@ const SkinDetail: React.FC = () => {
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">30-Day MA</p>
-                  <p className="text-base font-bold font-mono text-white mt-0.5">${ma30d.toFixed(2)}</p>
+                  <p className="text-base font-bold font-mono text-white mt-0.5">${fmt(ma30d)}</p>
                 </div>
                 <div className={clsx(
                   'px-1.5 py-0.5 rounded text-[10px] font-bold font-mono',
@@ -982,11 +976,11 @@ const SkinDetail: React.FC = () => {
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">Support</p>
-                  <p className="text-sm font-bold font-mono text-red-400 mt-0.5">${support.toFixed(2)}</p>
+                  <p className="text-sm font-bold font-mono text-red-400 mt-0.5">${fmt(support)}</p>
                 </div>
                 <div className="text-right">
                   <p className="text-[10px] text-gray-500 uppercase tracking-wider">Resistance</p>
-                  <p className="text-sm font-bold font-mono text-emerald-400 mt-0.5">${resistance.toFixed(2)}</p>
+                  <p className="text-sm font-bold font-mono text-emerald-400 mt-0.5">${fmt(resistance)}</p>
                 </div>
               </div>
             </div>

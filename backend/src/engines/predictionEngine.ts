@@ -3,254 +3,194 @@ import { logger } from '../utils/logging';
 
 interface PricePrediction {
   skinId: number;
-  predictedPrice: number;
-  confidence: number; // 0-100
-  trendDirection: 'up' | 'down' | 'stable';
+  skinName: string;
+  currentPrice: number;
+  predicted7d: number;
+  predicted30d: number;
+  predictedPrice: number; // backwards compat — same as predicted7d
+  confidence: number;
+  direction: 'up' | 'down' | 'stable';
+  trendDirection: 'up' | 'down' | 'stable'; // backwards compat
   trendStrength: 'strong' | 'moderate' | 'weak';
   movingAvg7d: number;
   movingAvg30d: number;
   volatility: number;
   recommendation: 'strong_buy' | 'buy' | 'neutral' | 'sell' | 'overvalued';
+  signals: string[];
+  factors: {
+    trendMomentum: number;
+    volumeSignal: number;
+    meanReversion: number;
+    volatilityRisk: number;
+    rarityPremium: number;
+  };
 }
 
-/**
- * Price Prediction Engine
- * Uses moving averages, trend analysis, and volatility to forecast prices
- */
+const RARITY_STABILITY: Record<string, number> = {
+  'Covert': 0.85, 'Classified': 0.75, 'Restricted': 0.65,
+  'Mil-Spec': 0.50, 'Industrial Grade': 0.40, 'Consumer Grade': 0.30,
+  'Extraordinary': 0.90,
+};
+
 export async function predictPrice(skinId: number): Promise<PricePrediction | null> {
   try {
-    // Get price history for the past 30 days
-    const history = await getPriceHistory(skinId, 30);
-    if (!history || history.length < 7) {
-      logger.warn('Insufficient price history for prediction', { skinId });
-      return null;
+    const skin = await queryOne(
+      `SELECT s.id, s.name, s.rarity,
+              ps.avg_price_7d, ps.avg_price_30d,
+              ps.min_price_7d, ps.max_price_7d,
+              ps.min_price_30d, ps.max_price_30d,
+              ps.trading_volume_7d, ps.trading_volume_30d,
+              ps.price_volatility,
+              (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) as current_price
+       FROM skins s
+       LEFT JOIN price_statistics ps ON ps.skin_id = s.id
+       WHERE s.id = $1`,
+      [skinId]
+    );
+
+    if (!skin || !skin.current_price) return null;
+
+    const currentPrice = parseFloat(skin.current_price);
+    const avg7d = parseFloat(skin.avg_price_7d) || currentPrice;
+    const avg30d = parseFloat(skin.avg_price_30d) || currentPrice;
+    const vol7d = parseInt(skin.trading_volume_7d) || 0;
+    const vol30d = parseInt(skin.trading_volume_30d) || 0;
+    const volatility = parseFloat(skin.price_volatility) || 0;
+    const rarity = skin.rarity || 'Mil-Spec';
+    const signals: string[] = [];
+
+    // ═══ FACTOR 1: Trend Momentum ═══
+    let trendMomentum = 0;
+    if (avg30d > 0) {
+      const shortVsLong = ((avg7d - avg30d) / avg30d) * 100;
+      trendMomentum = Math.max(-100, Math.min(100, shortVsLong * 5));
+      if (shortVsLong > 5) signals.push('7-day average above 30-day — uptrend');
+      else if (shortVsLong < -5) signals.push('7-day average below 30-day — downtrend');
+    }
+    if (avg7d > 0) {
+      const cvsa = ((currentPrice - avg7d) / avg7d) * 100;
+      if (cvsa > 10) signals.push(`${cvsa.toFixed(1)}% above weekly average`);
+      else if (cvsa < -10) signals.push(`${Math.abs(cvsa).toFixed(1)}% below weekly average — potential undervalue`);
     }
 
-    // Calculate moving averages
-    const ma7 = calculateMovingAverage(history, 7);
-    const ma30 = calculateMovingAverage(history, 30);
+    // ═══ FACTOR 2: Volume Signal ═══
+    let volumeSignal = 0;
+    if (vol30d > 0) {
+      const weeklyNorm = vol30d / 4.29;
+      const volChange = weeklyNorm > 0 ? ((vol7d - weeklyNorm) / weeklyNorm) * 100 : 0;
+      volumeSignal = Math.max(-100, Math.min(100, volChange * 2));
+      if (volChange > 30) signals.push('Volume spike — increased interest');
+      else if (volChange < -30) signals.push('Volume declining — reduced interest');
+    }
 
-    // Calculate volatility
-    const volatility = calculateVolatility(history);
+    // ═══ FACTOR 3: Mean Reversion ═══
+    let meanReversion = 0;
+    if (avg30d > 0) {
+      const devPct = ((currentPrice - avg30d) / avg30d) * 100;
+      meanReversion = Math.max(-100, Math.min(100, -devPct * 3));
+      if (devPct < -15) signals.push('Well below 30-day average — reversion likely');
+      else if (devPct > 15) signals.push('Well above 30-day average — may pull back');
+    }
 
-    // Determine trend
-    const trend = determineTrend(history, ma7, ma30);
+    // ═══ FACTOR 4: Volatility Risk ═══
+    const volatilityRisk = Math.min(100, volatility);
+    if (volatility > 50) signals.push('High volatility — prediction less reliable');
 
-    // Calculate predicted price for next day
-    const predictedPrice = calculateNextPricePoint(history, ma7, ma30, trend);
+    // ═══ FACTOR 5: Rarity Premium ═══
+    const stability = RARITY_STABILITY[rarity] || 0.5;
+    const rarityPremium = stability * 100;
+    if (stability >= 0.85) signals.push('High rarity — prices tend to hold');
 
-    // Calculate confidence based on data quality
-    const confidence = calculateConfidence(history, volatility);
+    // ═══ COMBINE → PREDICTION ═══
+    // Rarity acts as a dampener (stabilizes predictions), not a directional bias
+    // Mean reversion gets higher weight when trend is weak, lower when trend is strong
+    const trendStrengthAbs = Math.abs(trendMomentum);
+    const meanRevWeight = trendStrengthAbs > 50 ? 0.15 : 0.30; // reduce mean reversion when trend is strong
+    const trendWeight = trendStrengthAbs > 50 ? 0.45 : 0.30;   // increase trend weight when strong
 
-    // Determine recommendation
-    const recommendation = getRecommendation(predictedPrice, ma30, volatility);
+    const composite =
+      (trendMomentum * trendWeight) +
+      (volumeSignal * 0.20) +
+      (meanReversion * meanRevWeight) +
+      (-volatilityRisk * 0.15);
+
+    // Rarity dampens the magnitude — high rarity = less extreme predictions
+    const rarityDampener = 0.5 + (stability * 0.5); // 0.65 to 0.95
+    const changePct7d = (composite / 100) * 10 * rarityDampener;
+    const changePct30d = (composite / 100) * 20 * rarityDampener;
+
+    const predicted7d = Math.round(currentPrice * (1 + changePct7d / 100) * 100) / 100;
+    const predicted30d = Math.round(currentPrice * (1 + changePct30d / 100) * 100) / 100;
+
+    const direction = changePct7d > 2 ? 'up' : changePct7d < -2 ? 'down' : 'stable';
+    const strength: 'strong' | 'moderate' | 'weak' = Math.abs(changePct7d) > 5 ? 'strong' : Math.abs(changePct7d) > 2 ? 'moderate' : 'weak';
+
+    // Confidence
+    let confidence = 50;
+    if (vol7d > 10) confidence += 10;
+    if (vol30d > 50) confidence += 10;
+    if (volatility < 30) confidence += 10;
+    if (volatility > 100) confidence -= 20;
+    if (avg7d > 0 && avg30d > 0) confidence += 10;
+    confidence = Math.max(10, Math.min(95, confidence));
+
+    // Recommendation based on predicted movement + current position
+    const predictedChange = changePct7d;
+    const recommendation: 'strong_buy' | 'buy' | 'neutral' | 'sell' | 'overvalued' =
+      predictedChange > 6 ? 'strong_buy' :
+      predictedChange > 2 ? 'buy' :
+      predictedChange < -6 ? 'overvalued' :
+      predictedChange < -2 ? 'sell' :
+      'neutral';
+
+    if (signals.length === 0) signals.push('Insufficient data for strong signals');
 
     return {
-      skinId,
-      predictedPrice: Math.round(predictedPrice * 100) / 100,
-      confidence: Math.round(confidence),
-      trendDirection: trend.direction,
-      trendStrength: trend.strength,
-      movingAvg7d: Math.round(ma7 * 100) / 100,
-      movingAvg30d: Math.round(ma30 * 100) / 100,
-      volatility: Math.round(volatility * 100) / 100,
-      recommendation,
+      skinId, skinName: skin.name, currentPrice,
+      predicted7d, predicted30d, predictedPrice: predicted7d,
+      confidence, direction, trendDirection: direction, trendStrength: strength,
+      movingAvg7d: avg7d, movingAvg30d: avg30d, volatility,
+      recommendation, signals,
+      factors: {
+        trendMomentum: Math.round(trendMomentum), volumeSignal: Math.round(volumeSignal),
+        meanReversion: Math.round(meanReversion), volatilityRisk: Math.round(volatilityRisk),
+        rarityPremium: Math.round(rarityPremium),
+      },
     };
-  } catch (error) {
-    logger.error('Error predicting price:', { skinId, error });
+  } catch (error: any) {
+    logger.error(`Prediction error for skin ${skinId}:`, error.message);
     return null;
   }
-}
-
-async function getPriceHistory(skinId: number, days: number) {
-  try {
-    return await queryMany(
-      `
-      SELECT 
-        price,
-        timestamp,
-        EXTRACT(EPOCH FROM NOW() - timestamp)/86400 as days_ago
-      FROM price_history
-      WHERE skin_id = $1
-      AND timestamp >= NOW() - ($2 || ' days')::interval
-      ORDER BY timestamp ASC
-      `,
-      [skinId, days]
-    );
-  } catch (error) {
-    logger.error('Error fetching price history:', { skinId, error });
-    return [];
-  }
-}
-
-function calculateMovingAverage(history: any[], days: number): number {
-  const subset = history.filter((h) => h.days_ago <= days);
-  if (subset.length === 0) return 0;
-
-  const sum = subset.reduce((acc, h) => acc + parseFloat(h.price), 0);
-  return sum / subset.length;
-}
-
-function calculateVolatility(history: any[]): number {
-  const prices = history.map((h) => parseFloat(h.price));
-  const mean = prices.reduce((a, b) => a + b) / prices.length;
-
-  const squaredDiffs = prices.map((p) => Math.pow(p - mean, 2));
-  const avgSquaredDiff = squaredDiffs.reduce((a, b) => a + b) / squaredDiffs.length;
-  const stdDev = Math.sqrt(avgSquaredDiff);
-
-  // Convert to percentage
-  return (stdDev / mean) * 100;
-}
-
-function determineTrend(history: any[], ma7: number, ma30: number) {
-  const latest = parseFloat(history[history.length - 1].price);
-  const oldest = parseFloat(history[0].price);
-
-  const priceChange = ((latest - oldest) / oldest) * 100;
-
-  // Compare moving averages
-  const maDiff = ma7 - ma30;
-  const maPercentDiff = (maDiff / ma30) * 100;
-
-  let direction: 'up' | 'down' | 'stable' = 'stable';
-  let strength: 'strong' | 'moderate' | 'weak' = 'weak';
-
-  if (maPercentDiff > 2) {
-    direction = 'up';
-  } else if (maPercentDiff < -2) {
-    direction = 'down';
-  }
-
-  // Determine strength
-  if (Math.abs(maPercentDiff) > 5) {
-    strength = 'strong';
-  } else if (Math.abs(maPercentDiff) > 2) {
-    strength = 'moderate';
-  }
-
-  return { direction, strength };
-}
-
-function calculateNextPricePoint(
-  history: any[],
-  ma7: number,
-  ma30: number,
-  trend: any
-): number {
-  const latest = parseFloat(history[history.length - 1].price);
-
-  // Weighted average of latest price, MA7, and projected trend
-  let predicted = latest * 0.4 + ma7 * 0.4 + ma30 * 0.2;
-
-  // Apply trend adjustment
-  if (trend.direction === 'up') {
-    const adjustment = trend.strength === 'strong' ? 0.02 : 0.01;
-    predicted *= 1 + adjustment;
-  } else if (trend.direction === 'down') {
-    const adjustment = trend.strength === 'strong' ? -0.02 : -0.01;
-    predicted *= 1 + adjustment;
-  }
-
-  return predicted;
-}
-
-function calculateConfidence(history: any[], volatility: number): number {
-  let confidence = 75; // Base confidence
-
-  // Reduce confidence if high volatility
-  if (volatility > 15) {
-    confidence -= 25;
-  } else if (volatility > 10) {
-    confidence -= 15;
-  }
-
-  // Reduce confidence if low sample size
-  if (history.length < 15) {
-    confidence -= 20;
-  }
-
-  return Math.max(20, Math.min(95, confidence));
-}
-
-function getRecommendation(
-  predictedPrice: number,
-  ma30: number,
-  volatility: number
-): 'strong_buy' | 'buy' | 'neutral' | 'sell' | 'overvalued' {
-  const percentChange = ((predictedPrice - ma30) / ma30) * 100;
-
-  // If predicted price is much lower: buy signals
-  if (percentChange < -8) return 'strong_buy';
-  if (percentChange < -4) return 'buy';
-
-  // If predicted price is neutral
-  if (percentChange > -4 && percentChange < 4) return 'neutral';
-
-  // If predicted price is much higher: sell signals
-  if (percentChange > 8) return 'overvalued';
-  if (percentChange > 4) return 'sell';
-
-  return 'neutral';
 }
 
 export async function predictAllPrices() {
   try {
     logger.info('🔮 Starting price predictions...');
-
-    const skins = await queryMany('SELECT id FROM skins LIMIT 500');
-    let successCount = 0;
-    let errorCount = 0;
-
+    const skins = await queryMany(
+      `SELECT s.id FROM skins s
+       JOIN price_statistics ps ON ps.skin_id = s.id
+       WHERE ps.trading_volume_7d > 0 LIMIT 500`
+    );
+    let ok = 0, fail = 0;
     for (const skin of skins) {
       try {
-        const prediction = await predictPrice(skin.id);
-        if (prediction) {
-          await storePrediction(prediction);
-          successCount++;
+        const pred = await predictPrice(skin.id);
+        if (pred) {
+          await query(
+            `INSERT INTO price_predictions
+             (skin_id, prediction_date, predicted_price, confidence_score,
+              trend_direction, prediction_strength, moving_avg_7d, moving_avg_30d, volatility_forecast)
+             VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, $8)
+             ON CONFLICT (skin_id, prediction_date) DO UPDATE SET
+               predicted_price = $2, confidence_score = $3, trend_direction = $4,
+               prediction_strength = $5, moving_avg_7d = $6, moving_avg_30d = $7, volatility_forecast = $8`,
+            [pred.skinId, pred.predicted7d, pred.confidence, pred.direction,
+             pred.trendStrength, pred.movingAvg7d, pred.movingAvg30d, pred.volatility]
+          );
+          ok++;
         }
-      } catch (error) {
-        errorCount++;
-        logger.error('Error predicting price for skin:', { skinId: skin.id, error });
-      }
+      } catch { fail++; }
     }
-
-    logger.info('✓ Price predictions complete', { successCount, errorCount });
-  } catch (error) {
-    logger.error('Error in predictAllPrices:', error);
-  }
-}
-
-async function storePrediction(prediction: PricePrediction) {
-  try {
-    await query(
-      `
-      INSERT INTO price_predictions 
-      (skin_id, prediction_date, predicted_price, confidence_score, 
-       trend_direction, prediction_strength, moving_avg_7d, moving_avg_30d, volatility_forecast)
-      VALUES ($1, CURRENT_DATE, $2, $3, $4, $5, $6, $7, $8)
-      ON CONFLICT (skin_id, prediction_date) 
-      DO UPDATE SET 
-        predicted_price = $2,
-        confidence_score = $3,
-        trend_direction = $4,
-        prediction_strength = $5,
-        moving_avg_7d = $6,
-        moving_avg_30d = $7,
-        volatility_forecast = $8
-      `,
-      [
-        prediction.skinId,
-        prediction.predictedPrice,
-        prediction.confidence,
-        prediction.trendDirection,
-        prediction.trendStrength,
-        prediction.movingAvg7d,
-        prediction.movingAvg30d,
-        prediction.volatility,
-      ]
-    );
-  } catch (error) {
-    logger.error('Error storing prediction:', error);
-  }
+    logger.info(`✓ Predictions: ${ok} generated, ${fail} failed`);
+  } catch (error: any) { logger.error('Predict all error:', error.message); }
 }

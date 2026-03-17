@@ -1,6 +1,9 @@
 import { io, Socket } from 'socket.io-client';
 
-const SOCKET_URL = import.meta.env.VITE_API_URL?.replace('/api', '') || 'http://localhost:5000';
+// Connect to backend — use proxy in dev, direct in production
+const SOCKET_URL = window.location.hostname === 'localhost'
+  ? 'https://cs-skin-backend-production.up.railway.app'
+  : window.location.origin;
 
 let socket: Socket | null = null;
 
@@ -69,7 +72,8 @@ function emit(event: string, data: any) {
 }
 
 export function connectSocket(): Socket {
-  if (socket?.connected) return socket;
+  // True singleton — if socket exists (connected or connecting), return it
+  if (socket) return socket;
 
   socket = io(SOCKET_URL, {
     transports: ['websocket', 'polling'],

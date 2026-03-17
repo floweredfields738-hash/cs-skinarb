@@ -1,424 +1,376 @@
 import express, { Request, Response, NextFunction } from 'express';
-import { query } from '../../utils/database';
+import axios from 'axios';
+import { query, queryOne, queryMany } from '../../utils/database';
 import { authMiddleware } from '../../middleware/auth';
-import { AppError } from '../../middleware/errorHandler';
 import { logger } from '../../utils/logging';
+import { cacheGet, cacheSet } from '../../utils/cache';
 
 const router = express.Router();
 
-// Get user portfolio
-router.get('/', authMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+// All portfolio routes require auth
+router.use(authMiddleware);
+
+// ─── Get portfolio with holdings and P&L ─────────────
+router.get('/', async (req: Request, res: Response, next: NextFunction) => {
   try {
     const userId = (req as any).userId;
 
-    // Get portfolio
-    const portfolioResult = await query(
-      `SELECT id, user_id, total_value, created_at, updated_at
-       FROM portfolios WHERE user_id = $1`,
+    // Get or create portfolio
+    let portfolio = await queryOne(
+      'SELECT id FROM portfolios WHERE user_id = $1',
       [userId]
     );
 
-    if (!portfolioResult.rows.length) {
-      return next(
-        new AppError('Portfolio not found. Import inventory first.', 404, 'PORTFOLIO_NOT_FOUND')
+    if (!portfolio) {
+      portfolio = await queryOne(
+        `INSERT INTO portfolios (user_id, total_value, total_invested, total_profit, profit_percentage, total_items, created_at)
+         VALUES ($1, 0, 0, 0, 0, 0, NOW()) RETURNING id`,
+        [userId]
       );
     }
 
-    const portfolio = portfolioResult.rows[0];
-
-    // Get portfolio items (skins in inventory)
-    const itemsResult = await query(
-      `SELECT pi.id, pi.skin_id, s.name, s.image_url, s.rarity, 
-              pi.quantity, pi.purchase_price, pi.current_price,
-              pi.added_at, pi.updated_at,
-              ROUND(((s.current_price - pi.purchase_price) / pi.purchase_price * 100)::numeric, 2) as profit_loss_percent
+    // Get all holdings with live market prices
+    const items = await queryMany(
+      `SELECT pi.id, pi.skin_id, pi.quantity, pi.purchase_price, pi.condition, pi.float_value,
+              pi.purchase_date, pi.notes, pi.created_at,
+              s.name, s.weapon_name, s.skin_name, s.rarity, s.min_float, s.max_float,
+              (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = pi.skin_id AND mp.price > 0) as market_price
        FROM portfolio_items pi
-       JOIN skins s ON pi.skin_id = s.id
+       JOIN skins s ON s.id = pi.skin_id
        WHERE pi.portfolio_id = $1
-       ORDER BY pi.current_price DESC`,
+       ORDER BY pi.created_at DESC`,
       [portfolio.id]
     );
 
-    // Calculate portfolio stats
-    const statsResult = await query(
-      `SELECT 
-         COUNT(*) as total_items,
-         SUM(quantity) as total_quantity,
-         ROUND(SUM(purchase_price * quantity)::numeric, 2) as total_cost,
-         ROUND(SUM(current_price)::numeric, 2) as total_current_value,
-         ROUND((SUM(current_price) - SUM(purchase_price * quantity))::numeric, 2) as total_profit_loss
-       FROM portfolio_items
-       WHERE portfolio_id = $1`,
-      [portfolio.id]
-    );
+    // Calculate P&L for each item
+    const holdings = items.map((i: any) => {
+      const purchasePrice = parseFloat(i.purchase_price) || 0;
+      const marketPrice = i.market_price ? parseFloat(i.market_price) : null;
+      const quantity = i.quantity || 1;
+      const totalCost = purchasePrice * quantity;
+      const totalValue = marketPrice ? marketPrice * quantity : null;
+      const profitLoss = totalValue !== null ? totalValue - totalCost : null;
+      const profitPercent = totalCost > 0 && profitLoss !== null ? (profitLoss / totalCost) * 100 : null;
 
-    const stats = statsResult.rows[0];
+      return {
+        id: i.id,
+        skin_id: i.skin_id,
+        name: i.name,
+        weapon_name: i.weapon_name,
+        skin_name: i.skin_name,
+        rarity: i.rarity,
+        quantity,
+        purchase_price: purchasePrice,
+        market_price: marketPrice,
+        total_cost: Math.round(totalCost * 100) / 100,
+        total_value: totalValue !== null ? Math.round(totalValue * 100) / 100 : null,
+        profit_loss: profitLoss !== null ? Math.round(profitLoss * 100) / 100 : null,
+        profit_percent: profitPercent !== null ? Math.round(profitPercent * 100) / 100 : null,
+        condition: i.condition,
+        float_value: i.float_value ? parseFloat(i.float_value) : null,
+        min_float: i.min_float ? parseFloat(i.min_float) : 0,
+        max_float: i.max_float ? parseFloat(i.max_float) : 1,
+        purchase_date: i.purchase_date,
+        notes: i.notes,
+        added_at: i.created_at,
+      };
+    });
+
+    // Summary stats
+    const totalInvested = holdings.reduce((sum: number, h: any) => sum + h.total_cost, 0);
+    const totalValue = holdings.reduce((sum: number, h: any) => sum + (h.total_value || h.total_cost), 0);
+    const totalPL = totalValue - totalInvested;
+    const totalPLPercent = totalInvested > 0 ? (totalPL / totalInvested) * 100 : 0;
 
     res.json({
       success: true,
-      data: {
-        portfolio,
-        items: itemsResult.rows,
-        stats: {
-          ...stats,
-          profitLossPercent: parseFloat(
-            (
-              ((stats.total_current_value - stats.total_cost) / stats.total_cost) *
-              100
-            ).toFixed(2)
-          ),
-        },
+      portfolio: {
+        id: portfolio.id,
+        totalInvested: Math.round(totalInvested * 100) / 100,
+        totalValue: Math.round(totalValue * 100) / 100,
+        profitLoss: Math.round(totalPL * 100) / 100,
+        profitPercent: Math.round(totalPLPercent * 100) / 100,
+        itemCount: holdings.length,
       },
+      holdings,
     });
   } catch (error) {
     next(error);
   }
 });
 
-// Get portfolio performance over time
-router.get(
-  '/performance/:period',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).userId;
-      const period = (req.params.period as string) || '7d'; // 7d, 30d, 90d, 1y
+// ─── Add item to portfolio ───────────────────────────
+router.post('/add', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).userId;
+    const { skinId, purchasePrice, quantity, condition, notes } = req.body;
 
-      let intervalDays = 7;
-      if (period === '30d') intervalDays = 30;
-      else if (period === '90d') intervalDays = 90;
-      else if (period === '1y') intervalDays = 365;
+    if (!skinId || !purchasePrice) {
+      return res.status(400).json({ success: false, error: 'skinId and purchasePrice are required' });
+    }
 
-      const portfolioResult = await query(
-        'SELECT id FROM portfolios WHERE user_id = $1',
+    // Verify skin exists
+    const skin = await queryOne('SELECT id, name FROM skins WHERE id = $1', [skinId]);
+    if (!skin) {
+      return res.status(404).json({ success: false, error: 'Skin not found' });
+    }
+
+    // Get or create portfolio
+    let portfolio = await queryOne('SELECT id FROM portfolios WHERE user_id = $1', [userId]);
+    if (!portfolio) {
+      portfolio = await queryOne(
+        `INSERT INTO portfolios (user_id, total_value, total_invested, total_profit, profit_percentage, total_items, created_at)
+         VALUES ($1, 0, 0, 0, 0, 0, NOW()) RETURNING id`,
         [userId]
       );
-
-      if (!portfolioResult.rows.length) {
-        return next(new AppError('Portfolio not found', 404, 'PORTFOLIO_NOT_FOUND'));
-      }
-
-      const portfolioId = portfolioResult.rows[0].id;
-
-      // Get performance data from database
-      const performanceResult = await query(
-        `SELECT 
-           DATE(timestamp) as date,
-           ROUND(SUM(current_price)::numeric, 2) as portfolio_value,
-           ROUND(SUM(current_price) - SUM(cost)::numeric, 2) as profit_loss
-         FROM portfolio_snapshots
-         WHERE portfolio_id = $1
-         AND timestamp >= NOW() - INTERVAL '${intervalDays} days'
-         GROUP BY DATE(timestamp)
-         ORDER BY date ASC`,
-        [portfolioId]
-      );
-
-      res.json({
-        success: true,
-        data: {
-          period,
-          performance: performanceResult.rows,
-        },
-      });
-    } catch (error) {
-      next(error);
     }
+
+    // Add item
+    const item = await queryOne(
+      `INSERT INTO portfolio_items (portfolio_id, skin_id, quantity, purchase_price, condition, notes, purchase_date, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW()) RETURNING id`,
+      [portfolio.id, skinId, quantity || 1, purchasePrice, condition || null, notes || null]
+    );
+
+    logger.info(`User ${userId} added ${skin.name} to portfolio at $${purchasePrice}`);
+
+    res.json({ success: true, message: `${skin.name} added to portfolio`, itemId: item?.id });
+  } catch (error) {
+    next(error);
   }
-);
+});
 
-// Get portfolio item details
-router.get(
-  '/items/:skinId',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).userId;
-      const { skinId } = req.params;
+// ─── Remove item from portfolio ──────────────────────
+router.delete('/remove/:itemId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).userId;
+    const { itemId } = req.params;
 
-      const portfolioResult = await query(
-        'SELECT id FROM portfolios WHERE user_id = $1',
-        [userId]
-      );
-
-      if (!portfolioResult.rows.length) {
-        return next(new AppError('Portfolio not found', 404, 'PORTFOLIO_NOT_FOUND'));
-      }
-
-      const portfolioId = portfolioResult.rows[0].id;
-
-      const itemResult = await query(
-        `SELECT pi.id, pi.skin_id, s.name, s.image_url, s.rarity, s.current_price,
-                pi.quantity, pi.purchase_price, pi.current_price, pi.added_at,
-                ROUND(((s.current_price - pi.purchase_price) / pi.purchase_price * 100)::numeric, 2) as profit_loss_percent
-         FROM portfolio_items pi
-         JOIN skins s ON pi.skin_id = s.id
-         WHERE pi.portfolio_id = $1 AND pi.skin_id = $2`,
-        [portfolioId, skinId]
-      );
-
-      if (!itemResult.rows.length) {
-        return next(new AppError('Portfolio item not found', 404, 'ITEM_NOT_FOUND'));
-      }
-
-      // Get price history for this item
-      const historyResult = await query(
-        `SELECT price, timestamp FROM price_history
-         WHERE skin_id = $1
-         AND timestamp >= NOW() - INTERVAL '30 days'
-         ORDER BY timestamp ASC`,
-        [skinId]
-      );
-
-      res.json({
-        success: true,
-        data: {
-          item: itemResult.rows[0],
-          priceHistory: historyResult.rows,
-        },
-      });
-    } catch (error) {
-      next(error);
+    const portfolio = await queryOne('SELECT id FROM portfolios WHERE user_id = $1', [userId]);
+    if (!portfolio) {
+      return res.status(404).json({ success: false, error: 'Portfolio not found' });
     }
+
+    const result = await query(
+      'DELETE FROM portfolio_items WHERE id = $1 AND portfolio_id = $2',
+      [itemId, portfolio.id]
+    );
+
+    res.json({ success: true, removed: (result.rowCount || 0) > 0 });
+  } catch (error) {
+    next(error);
   }
-);
+});
 
-// Import Steam inventory to portfolio
-router.post(
-  '/import-inventory',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).userId;
-      const { steamInventoryItems } = req.body; // Expects array of {skinId, quantity, price}
+// ─── Update item (quantity, notes) ───────────────────
+router.put('/update/:itemId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).userId;
+    const { itemId } = req.params;
+    const { quantity, purchasePrice, notes } = req.body;
 
-      if (!steamInventoryItems || !Array.isArray(steamInventoryItems)) {
-        return next(
-          new AppError('Invalid inventory items format', 400, 'INVALID_FORMAT')
-        );
-      }
-
-      // Get or create portfolio
-      let portfolioResult = await query(
-        'SELECT id FROM portfolios WHERE user_id = $1',
-        [userId]
-      );
-
-      let portfolioId;
-      if (portfolioResult.rows.length) {
-        portfolioId = portfolioResult.rows[0].id;
-        // Clear existing items
-        await query('DELETE FROM portfolio_items WHERE portfolio_id = $1', [portfolioId]);
-      } else {
-        // Create new portfolio
-        const createResult = await query(
-          `INSERT INTO portfolios (user_id, total_value, created_at, updated_at)
-           VALUES ($1, 0, NOW(), NOW())
-           RETURNING id`,
-          [userId]
-        );
-        portfolioId = createResult.rows[0].id;
-      }
-
-      // Insert new items
-      let totalValue = 0;
-      for (const item of steamInventoryItems) {
-        const { skinId, quantity, price } = item;
-
-        await query(
-          `INSERT INTO portfolio_items (portfolio_id, skin_id, quantity, purchase_price, current_price, added_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-          [portfolioId, skinId, quantity, price, quantity * price]
-        );
-
-        totalValue += quantity * price;
-      }
-
-      // Update portfolio total value
-      await query(
-        'UPDATE portfolios SET total_value = $1, updated_at = NOW() WHERE id = $2',
-        [totalValue, portfolioId]
-      );
-
-      logger.info(`Portfolio imported for user ${userId} with ${steamInventoryItems.length} items`);
-
-      res.json({
-        success: true,
-        message: `Imported ${steamInventoryItems.length} items`,
-        data: {
-          portfolioId,
-          itemsImported: steamInventoryItems.length,
-          totalValue: parseFloat(totalValue.toFixed(2)),
-        },
-      });
-    } catch (error) {
-      next(error);
+    const portfolio = await queryOne('SELECT id FROM portfolios WHERE user_id = $1', [userId]);
+    if (!portfolio) {
+      return res.status(404).json({ success: false, error: 'Portfolio not found' });
     }
-  }
-);
 
-// Add item to portfolio manually
-router.post(
-  '/items/add',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).userId;
-      const { skinId, quantity, price } = req.body;
+    const updates: string[] = [];
+    const params: any[] = [];
+    let paramCount = 1;
 
-      if (!skinId || !quantity || !price) {
-        return next(
-          new AppError('skinId, quantity, and price are required', 400, 'MISSING_FIELDS')
-        );
-      }
+    if (quantity !== undefined) { updates.push(`quantity = $${paramCount++}`); params.push(quantity); }
+    if (purchasePrice !== undefined) { updates.push(`purchase_price = $${paramCount++}`); params.push(purchasePrice); }
+    if (notes !== undefined) { updates.push(`notes = $${paramCount++}`); params.push(notes); }
 
-      // Get portfolio
-      const portfolioResult = await query(
-        'SELECT id FROM portfolios WHERE user_id = $1',
-        [userId]
-      );
-
-      if (!portfolioResult.rows.length) {
-        return next(new AppError('Portfolio not found', 404, 'PORTFOLIO_NOT_FOUND'));
-      }
-
-      const portfolioId = portfolioResult.rows[0].id;
-
-      // Check if item exists
-      const existingResult = await query(
-        'SELECT id, quantity, purchase_price FROM portfolio_items WHERE portfolio_id = $1 AND skin_id = $2',
-        [portfolioId, skinId]
-      );
-
-      if (existingResult.rows.length > 0) {
-        // Update existing item
-        const existing = existingResult.rows[0];
-        const newQuantity = existing.quantity + quantity;
-        const newAvgPrice =
-          (existing.purchase_price * existing.quantity + price * quantity) / newQuantity;
-
-        await query(
-          `UPDATE portfolio_items 
-           SET quantity = $1, purchase_price = $2, current_price = $3, updated_at = NOW()
-           WHERE id = $4`,
-          [newQuantity, newAvgPrice, newQuantity * newAvgPrice, existing.id]
-        );
-      } else {
-        // Insert new item
-        await query(
-          `INSERT INTO portfolio_items (portfolio_id, skin_id, quantity, purchase_price, current_price, added_at, updated_at)
-           VALUES ($1, $2, $3, $4, $5, NOW(), NOW())`,
-          [portfolioId, skinId, quantity, price, quantity * price]
-        );
-      }
-
-      // Recalculate portfolio total
-      const totalResult = await query(
-        'SELECT SUM(current_price) as total FROM portfolio_items WHERE portfolio_id = $1',
-        [portfolioId]
-      );
-
-      const total = totalResult.rows[0].total || 0;
-      await query(
-        'UPDATE portfolios SET total_value = $1, updated_at = NOW() WHERE id = $2',
-        [total, portfolioId]
-      );
-
-      res.json({
-        success: true,
-        message: 'Item added to portfolio',
-      });
-    } catch (error) {
-      next(error);
+    if (updates.length === 0) {
+      return res.status(400).json({ success: false, error: 'No fields to update' });
     }
+
+    params.push(itemId, portfolio.id);
+    await query(
+      `UPDATE portfolio_items SET ${updates.join(', ')}, last_updated = NOW()
+       WHERE id = $${paramCount++} AND portfolio_id = $${paramCount}`,
+      params
+    );
+
+    res.json({ success: true });
+  } catch (error) {
+    next(error);
   }
-);
+});
 
-// Remove item from portfolio
-router.delete(
-  '/items/:itemId',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).userId;
-      const { itemId } = req.params;
+// ─── Fetch Steam inventory for logged-in user ───────
+router.get('/inventory', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const userId = (req as any).userId;
 
-      // Verify ownership
-      const itemResult = await query(
-        `SELECT pi.id, pi.portfolio_id FROM portfolio_items pi
-         JOIN portfolios p ON pi.portfolio_id = p.id
-         WHERE pi.id = $1 AND p.user_id = $2`,
-        [itemId, userId]
+    // Get user's Steam ID
+    const user = await queryOne('SELECT steam_id FROM users WHERE id = $1', [userId]);
+    if (!user?.steam_id) {
+      return res.status(400).json({ success: false, error: 'No Steam account linked' });
+    }
+
+    // Fetch CS2 inventory from Steam (app 730, context 2)
+    logger.info(`Fetching inventory for Steam ID: "${user.steam_id}"`);
+    const steamUrl = `https://steamcommunity.com/inventory/${user.steam_id}/730/2?l=english&count=500`;
+    logger.info(`Steam URL: ${steamUrl}`);
+    const response = await axios.get(steamUrl, {
+      headers: {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+      },
+      timeout: 15000,
+    });
+
+    const data = response.data;
+    if (!data || !data.success) {
+      return res.json({
+        success: false,
+        error: 'Inventory is private or empty. Set your Steam inventory to public in Steam privacy settings.',
+      });
+    }
+
+    // Parse inventory items
+    const descriptions = data.descriptions || [];
+    const assets = data.assets || [];
+
+    // Build asset count map (some items stack)
+    const assetCounts: Record<string, number> = {};
+    for (const asset of assets) {
+      const key = `${asset.classid}_${asset.instanceid}`;
+      assetCounts[key] = (assetCounts[key] || 0) + 1;
+    }
+
+    // Map descriptions to items with counts and prices
+    const items = [];
+    const seen = new Set<string>();
+
+    for (const desc of descriptions) {
+      const key = `${desc.classid}_${desc.instanceid}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      const name = desc.market_hash_name || desc.name || '';
+      const count = assetCounts[key] || 1;
+
+      // Skip non-tradeable items
+      if (desc.tradable === 0 && desc.marketable === 0) continue;
+
+      // Get rarity from tags
+      const rarityTag = desc.tags?.find((t: any) => t.category === 'Rarity');
+      const exteriorTag = desc.tags?.find((t: any) => t.category === 'Exterior');
+      const typeTag = desc.tags?.find((t: any) => t.category === 'Type');
+      const weaponTag = desc.tags?.find((t: any) => t.category === 'Weapon');
+
+      // Get the exterior from the full name or tags
+      const exterior = exteriorTag?.localized_tag_name || null;
+      const baseName = name.replace(/\s*\((Factory New|Minimal Wear|Field-Tested|Well-Worn|Battle-Scarred)\)\s*$/i, '').trim();
+
+      // Find prices from ALL markets
+      // Match by exact matched_name (full Skinport name) when possible,
+      // otherwise match by base name + exterior
+      // Always filter: if user's item is NOT souvenir, exclude souvenir prices
+      const isSouvenir = name.toLowerCase().includes('souvenir');
+
+      // Try exact match on matched_name first (e.g. "MP9 | Orange Peel (Field-Tested)")
+      let priceResults = await queryMany(
+        `SELECT mp.price, m.name as market_name, m.display_name, mp.exterior, mp.matched_name
+         FROM market_prices mp
+         JOIN skins s ON s.id = mp.skin_id
+         JOIN markets m ON m.id = mp.market_id
+         WHERE mp.matched_name = $1 AND mp.price > 0
+         ORDER BY mp.price ASC`,
+        [name]
       );
 
-      if (!itemResult.rows.length) {
-        return next(new AppError('Item not found', 404, 'ITEM_NOT_FOUND'));
+      // Fallback: match by base name + exterior
+      if (priceResults.length === 0) {
+        priceResults = await queryMany(
+          `SELECT mp.price, m.name as market_name, m.display_name, mp.exterior, mp.matched_name
+           FROM market_prices mp
+           JOIN skins s ON s.id = mp.skin_id
+           JOIN markets m ON m.id = mp.market_id
+           WHERE s.name = $1 AND mp.price > 0
+             AND ($2::text IS NULL OR mp.exterior = $2)
+           ORDER BY mp.price ASC`,
+          [baseName, exterior]
+        );
+
+        // Filter out souvenir/non-souvenir mismatches in JS (simpler than SQL)
+        if (!isSouvenir) {
+          priceResults = priceResults.filter((r: any) =>
+            !r.matched_name || !r.matched_name.toLowerCase().includes('souvenir')
+          );
+        }
       }
 
-      const portfolioId = itemResult.rows[0].portfolio_id;
+      // Cheapest price across all markets = main price
+      const cheapestPrice = priceResults.length > 0 ? parseFloat(priceResults[0].price) : null;
 
-      // Delete item
-      await query('DELETE FROM portfolio_items WHERE id = $1', [itemId]);
+      // Build per-market price list
+      const marketPrices = priceResults.map((r: any) => ({
+        market: r.display_name || r.market_name,
+        price: parseFloat(r.price),
+        exterior: r.exterior,
+      }));
 
-      // Recalculate portfolio total
-      const totalResult = await query(
-        'SELECT SUM(current_price) as total FROM portfolio_items WHERE portfolio_id = $1',
-        [portfolioId]
-      );
-
-      const total = totalResult.rows[0].total || 0;
-      await query(
-        'UPDATE portfolios SET total_value = $1, updated_at = NOW() WHERE id = $2',
-        [total, portfolioId]
-      );
-
-      res.json({
-        success: true,
-        message: 'Item removed from portfolio',
+      items.push({
+        name,
+        market_hash_name: name,
+        icon_url: desc.icon_url ? `https://community.cloudflare.steamstatic.com/economy/image/${desc.icon_url}` : null,
+        rarity: rarityTag?.localized_tag_name || null,
+        exterior,
+        type: typeTag?.localized_tag_name || null,
+        weapon: weaponTag?.localized_tag_name || null,
+        tradable: desc.tradable === 1,
+        marketable: desc.marketable === 1,
+        quantity: count,
+        market_price: cheapestPrice,
+        market_prices: marketPrices,
+        total_value: cheapestPrice ? Math.round(cheapestPrice * count * 100) / 100 : null,
+        name_color: desc.name_color || null,
       });
-    } catch (error) {
-      next(error);
     }
-  }
-);
 
-// Get portfolio diversification analysis
-router.get(
-  '/analysis/diversification',
-  authMiddleware,
-  async (req: Request, res: Response, next: NextFunction) => {
-    try {
-      const userId = (req as any).userId;
+    // Sort by value (highest first)
+    items.sort((a, b) => (b.total_value || 0) - (a.total_value || 0));
 
-      const portfolioResult = await query(
-        'SELECT id FROM portfolios WHERE user_id = $1',
-        [userId]
-      );
+    // Calculate totals
+    const totalValue = items.reduce((sum, i) => sum + (i.total_value || 0), 0);
+    const totalItems = items.reduce((sum, i) => sum + i.quantity, 0);
+    const tradableItems = items.filter(i => i.tradable).length;
 
-      if (!portfolioResult.rows.length) {
-        return next(new AppError('Portfolio not found', 404, 'PORTFOLIO_NOT_FOUND'));
-      }
-
-      const portfolioId = portfolioResult.rows[0].id;
-
-      const diversificationResult = await query(
-        `SELECT s.rarity, COUNT(*) as count, ROUND(SUM(pi.current_price)::numeric, 2) as total_value
-         FROM portfolio_items pi
-         JOIN skins s ON pi.skin_id = s.id
-         WHERE pi.portfolio_id = $1
-         GROUP BY s.rarity
-         ORDER BY total_value DESC`,
-        [portfolioId]
-      );
-
-      res.json({
-        success: true,
-        data: diversificationResult.rows,
+    res.json({
+      success: true,
+      inventory: {
+        steam_id: user.steam_id,
+        total_items: totalItems,
+        unique_items: items.length,
+        tradable_items: tradableItems,
+        total_value: Math.round(totalValue * 100) / 100,
+        items,
+      },
+    });
+  } catch (error: any) {
+    if (error.response?.status === 403) {
+      return res.json({
+        success: false,
+        error: 'Inventory is private. Set your Steam inventory to public.',
       });
-    } catch (error) {
-      next(error);
     }
+    if (error.response?.status === 429) {
+      return res.json({
+        success: false,
+        error: 'Steam rate limited. Try again in a minute.',
+      });
+    }
+    logger.error('Inventory fetch error:', error.message, error.response?.status);
+    return res.status(500).json({
+      success: false,
+      error: `Failed to fetch inventory: ${error.message}`,
+    });
   }
-);
+});
 
 export default router;

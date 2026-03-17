@@ -2,6 +2,7 @@ import express, { Request, Response, NextFunction } from 'express';
 import { query } from '../../utils/database';
 import { optionalAuthMiddleware } from '../../middleware/auth';
 import { AppError } from '../../middleware/errorHandler';
+import { cacheGet, cacheSet } from '../../utils/cache';
 import { calculateOpportunityScore } from '../../engines/opportunityEngine';
 import { predictPrice } from '../../engines/predictionEngine';
 import { logger } from '../../utils/logging';
@@ -15,7 +16,8 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response, next
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
     const offset = (page - 1) * limit;
 
-    let whereClause = 'WHERE 1=1';
+    // Only show skins that have at least one real market price
+    let whereClause = 'WHERE EXISTS (SELECT 1 FROM market_prices mp0 WHERE mp0.skin_id = s.id AND mp0.price > 0)';
     let params: any[] = [];
     let paramCount = 1;
 
@@ -86,9 +88,10 @@ router.get('/', optionalAuthMiddleware, async (req: Request, res: Response, next
     params.push(limit, offset);
     const result = await query(
       `SELECT s.id, s.name, s.rarity, NULL as image_url,
-              (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id) as current_price,
+              (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) as current_price,
               ps.trading_volume_7d as volume_7d, NULL as trend,
-              os.overall_score as opportunity_score, s.min_float, s.case_name, s.updated_at as last_updated
+              os.overall_score as opportunity_score, s.min_float, s.max_float,
+              s.weapon_name, s.skin_name, s.case_name, s.updated_at as last_updated
        FROM skins s
        LEFT JOIN opportunity_scores os ON os.skin_id = s.id
        LEFT JOIN price_statistics ps ON ps.skin_id = s.id
@@ -141,6 +144,63 @@ router.get('/trending/opportunity', async (req: Request, res: Response, next: Ne
   }
 });
 
+// Search skins by name
+router.get('/search', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const q = (req.query.q as string || '').trim();
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+
+    if (!q) {
+      return res.json({ success: true, data: [] });
+    }
+
+    const result = await query(
+      `SELECT s.id, s.name, s.rarity, s.weapon_name, s.skin_name,
+              (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) as current_price
+       FROM skins s
+       WHERE s.name ILIKE $1
+       ORDER BY current_price DESC NULLS LAST
+       LIMIT $2`,
+      [`%${q}%`, limit]
+    );
+
+    res.json({ success: true, data: result.rows });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Market Index History (must be before /:id) ──────
+router.get('/market-index/history', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const range = (req.query.range as string) || '24h';
+    let interval = '24 hours';
+    if (range === '1h') interval = '1 hour';
+    else if (range === '6h') interval = '6 hours';
+    else if (range === '12h') interval = '12 hours';
+    else if (range === '7d' || range === '1w') interval = '7 days';
+    else if (range === 'all') interval = '365 days';
+
+    const result = await query(
+      `SELECT total_value, skin_count, timestamp
+       FROM market_index_history
+       WHERE timestamp > NOW() - INTERVAL '${interval}'
+       ORDER BY timestamp ASC`
+    );
+
+    res.json({
+      success: true,
+      data: result.rows.map((r: any) => ({
+        totalValue: parseFloat(r.total_value),
+        skinCount: r.skin_count,
+        time: new Date(r.timestamp).getTime(),
+      })),
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 // Get single skin with detailed analysis
 router.get('/:id', optionalAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
@@ -167,13 +227,24 @@ router.get('/:id', optionalAuthMiddleware, async (req: Request, res: Response, n
 
     const skin = skinResult.rows[0];
 
-    // Get market prices from multiple sources
+    // Get float range info
+    const { getFloatRange, getPossibleExteriors } = await import('../../data/floatRanges');
+    const floatRange = getFloatRange(skin.name);
+    const possibleExteriors = getPossibleExteriors(skin.name);
+    skin.float_min = floatRange[0];
+    skin.float_max = floatRange[1];
+    skin.possible_exteriors = possibleExteriors;
+
+    // Get market prices from multiple sources (all exteriors)
     const marketResult = await query(
-      `SELECT market_id, price, volume, last_updated
-       FROM market_prices
-       WHERE skin_id = $1
-       ORDER BY last_updated DESC
-       LIMIT 4`,
+      `SELECT mp.market_id, mp.price, mp.volume, mp.last_updated, mp.exterior,
+              mp.float_value, mp.custom_name, mp.paint_seed, mp.is_stattrak,
+              mp.matched_name, mp.direct_url,
+              m.name as market_name, m.display_name as market_display_name
+       FROM market_prices mp
+       JOIN markets m ON m.id = mp.market_id
+       WHERE mp.skin_id = $1 AND mp.price > 0
+       ORDER BY mp.exterior, mp.price ASC`,
       [id]
     );
 
@@ -203,7 +274,7 @@ router.get('/:id', optionalAuthMiddleware, async (req: Request, res: Response, n
     // Calculate current prediction if available (or predict on demand)
     let prediction = null;
     try {
-      prediction = await predictPrice(id);
+      prediction = await predictPrice(Number(id));
     } catch (err) {
       logger.warn(`Unable to predict price for skin ${id}:`, err);
     }
@@ -275,13 +346,13 @@ router.get('/:id/analysis', async (req: Request, res: Response, next: NextFuncti
     }
 
     // Calculate moving averages
-    const prices = historyResult.rows.map(r => parseFloat(r.price));
-    const ma7 = prices.slice(-7).reduce((a, b) => a + b, 0) / 7;
-    const ma30 = prices.reduce((a, b) => a + b, 0) / prices.length;
+    const prices = historyResult.rows.map((r: any) => parseFloat(r.price));
+    const ma7 = prices.slice(-7).reduce((a: number, b: number) => a + b, 0) / 7;
+    const ma30 = prices.reduce((a: number, b: number) => a + b, 0) / prices.length;
 
     // Calculate volatility
-    const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
-    const variance = prices.reduce((a, b) => a + Math.pow(b - mean, 2), 0) / prices.length;
+    const mean = prices.reduce((a: number, b: number) => a + b, 0) / prices.length;
+    const variance = prices.reduce((a: number, b: number) => a + Math.pow(b - mean, 2), 0) / prices.length;
     const stdDev = Math.sqrt(variance);
     const volatility = (stdDev / mean) * 100;
 
@@ -324,5 +395,6 @@ router.get('/:id/analysis', async (req: Request, res: Response, next: NextFuncti
     next(error);
   }
 });
+
 
 export default router;

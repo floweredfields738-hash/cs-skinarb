@@ -5,13 +5,21 @@ let redisClient: RedisClientType;
 
 export async function initializeRedis() {
   try {
+    const redisUrl = process.env.REDIS_URL;
     const redisHost = process.env.REDIS_HOST || 'localhost';
     const redisPort = process.env.REDIS_PORT || '6379';
-    redisClient = createClient({
-      url: `redis://${redisHost}:${redisPort}`,
-    });
+    const redisPassword = process.env.REDIS_PASSWORD;
 
-    redisClient.on('error', (err: any) => logger.error('Redis error:', err));
+    // Use REDIS_URL if set (supports rediss:// for TLS like Upstash)
+    // Otherwise build from host/port
+    const url = redisUrl
+      || (redisPassword
+        ? `rediss://default:${redisPassword}@${redisHost}:${redisPort}`
+        : `redis://${redisHost}:${redisPort}`);
+
+    redisClient = createClient({ url });
+
+    redisClient.on('error', (err: any) => logger.error('Redis error:', err.message));
     redisClient.on('connect', () => logger.info('✓ Redis connected'));
 
     await redisClient.connect();

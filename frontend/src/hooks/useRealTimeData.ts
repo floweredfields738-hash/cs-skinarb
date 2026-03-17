@@ -64,8 +64,24 @@ export interface MarketIndexPoint {
 export function useMarketIndex() {
   const [points, setPoints] = useState<MarketIndexPoint[]>([]);
   const pointsRef = useRef<MarketIndexPoint[]>([]);
+  const loadedRef = useRef(false);
 
   useEffect(() => {
+    // Load historical data on mount
+    if (!loadedRef.current) {
+      loadedRef.current = true;
+      const apiUrl = '/api';
+      fetch(`${apiUrl}/skins/market-index/history?range=24h`)
+        .then(r => r.json())
+        .then(data => {
+          if (data.success && data.data?.length) {
+            pointsRef.current = data.data;
+            setPoints([...pointsRef.current]);
+          }
+        })
+        .catch(() => {});
+    }
+
     connectSocket();
     const unsub = subscribe('market_index', (event: any) => {
       const d = event.data || event;
@@ -265,29 +281,50 @@ export function useLiveSkinPrices(skinId?: string) {
 export function useLivePriceFeed(maxItems = 10) {
   const [feed, setFeed] = useState<PriceUpdate['data'][]>([]);
 
-  // Seed with existing market data on mount so ticker isn't empty
+  // Seed with real market data + real price changes from history
   useEffect(() => {
-    const apiBase = import.meta.env.VITE_API_URL || '/api';
-    fetch(`${apiBase}/market/prices?limit=30`)
+    fetch(`/api/market/feed?limit=${maxItems}`)
       .then(r => r.json())
       .then(data => {
-        if (data?.data || Array.isArray(data)) {
-          const items = (data.data || data).slice(0, maxItems).map((p: any) => ({
+        const rawItems = data?.data || [];
+        if (Array.isArray(rawItems) && rawItems.length > 0) {
+          const items = rawItems.slice(0, maxItems).map((p: any) => ({
             skinId: p.skin_id,
             skinName: p.name || p.skin_name || `Skin #${p.skin_id}`,
             marketId: p.market_id,
             marketName: p.market_name || 'Market',
-            oldPrice: parseFloat(p.price) * (1 - 0.001),
-            newPrice: parseFloat(p.price),
-            change: parseFloat(p.price) * 0.001,
-            changePercent: Math.round((Math.random() * 4 - 1.5) * 10) / 10,
+            oldPrice: parseFloat(p.previous_price || p.price || 0),
+            newPrice: parseFloat(p.price || p.new_price || 0),
+            change: parseFloat(p.change || 0),
+            changePercent: parseFloat(p.change_percent || 0),
             volume: p.volume || 0,
-            timestamp: new Date().toISOString(),
+            timestamp: p.last_updated || new Date().toISOString(),
           }));
           setFeed(items);
         }
       })
-      .catch(() => {});
+      .catch(() => {
+        // Fallback: fetch raw prices without change data
+        fetch(`/api/market/prices?limit=${maxItems}`)
+          .then(r => r.json())
+          .then(data => {
+            const rawItems = data?.data?.prices || data?.data || [];
+            if (Array.isArray(rawItems) && rawItems.length > 0) {
+              setFeed(rawItems.slice(0, maxItems).map((p: any) => ({
+                skinId: p.skin_id,
+                skinName: p.name || p.skin_name || `Skin #${p.skin_id}`,
+                marketId: p.market_id,
+                marketName: p.market_name || 'Market',
+                oldPrice: parseFloat(p.price),
+                newPrice: parseFloat(p.price),
+                change: 0,
+                changePercent: 0,
+                volume: p.volume || 0,
+                timestamp: new Date().toISOString(),
+              })));
+            }
+          }).catch(() => {});
+      });
   }, [maxItems]);
 
   // Overlay live updates

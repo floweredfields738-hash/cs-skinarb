@@ -36,15 +36,59 @@ export async function getCandlestickData(
     [skinId, marketId, interval, limit]
   );
 
-  // Return in chronological order (oldest first)
-  return rows.reverse().map((r: any) => ({
-    timestamp: r.timestamp,
-    open: parseFloat(r.open_price),
-    high: parseFloat(r.high_price),
-    low: parseFloat(r.low_price),
-    close: parseFloat(r.close_price),
-    volume: parseInt(r.volume) || 0,
-  }));
+  if (rows.length >= 2) {
+    // Return in chronological order (oldest first)
+    return rows.reverse().map((r: any) => ({
+      timestamp: r.timestamp,
+      open: parseFloat(r.open_price),
+      high: parseFloat(r.high_price),
+      low: parseFloat(r.low_price),
+      close: parseFloat(r.close_price),
+      volume: parseInt(r.volume) || 0,
+    }));
+  }
+
+  // Fallback: generate candles from current market prices if no OHLC data
+  // Uses the current price and creates a minimal chart showing real value
+  const currentPrice = await queryOne(
+    `SELECT mp.price, s.name FROM market_prices mp
+     JOIN skins s ON s.id = mp.skin_id
+     WHERE mp.skin_id = $1 AND mp.market_id = $2 AND mp.price > 0
+     ORDER BY mp.last_updated DESC LIMIT 1`,
+    [skinId, marketId]
+  );
+
+  if (!currentPrice || !currentPrice.price) {
+    // Try any market
+    const anyPrice = await queryOne(
+      `SELECT mp.price, mp.market_id FROM market_prices mp
+       WHERE mp.skin_id = $1 AND mp.price > 0
+       ORDER BY mp.last_updated DESC LIMIT 1`,
+      [skinId]
+    );
+    if (!anyPrice) return [];
+
+    const p = parseFloat(anyPrice.price);
+    return generateMinimalCandles(p, interval, limit);
+  }
+
+  const p = parseFloat(currentPrice.price);
+  return generateMinimalCandles(p, interval, limit);
+}
+
+// Generate a single candle from the current real price
+// This gives the chart something to display while real history accumulates
+function generateMinimalCandles(currentPrice: number, interval: string, _count: number): any[] {
+  // Just return the current price as a single data point — no fake history
+  const now = new Date().toISOString();
+  return [{
+    timestamp: now,
+    open: currentPrice,
+    high: currentPrice,
+    low: currentPrice,
+    close: currentPrice,
+    volume: 0,
+  }];
 }
 
 // ── Aggregate price_history into OHLC candles ────────────────────────────────

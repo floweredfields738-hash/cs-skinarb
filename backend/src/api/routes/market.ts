@@ -17,11 +17,15 @@ router.get('/prices', optionalAuthMiddleware, async (req: Request, res: Response
     if (!prices) {
       const result = await query(
         `SELECT mp.skin_id, s.name, mp.market_id, mp.price, mp.volume,
-                mp.quantity, mp.last_updated
+                mp.quantity, mp.last_updated, mp.exterior, mp.float_value,
+                mp.custom_name, s.min_float, s.max_float, s.rarity,
+                m.display_name as market_name
          FROM market_prices mp
          JOIN skins s ON mp.skin_id = s.id
-         WHERE mp.last_updated >= NOW() - INTERVAL '1 hour'
-         ORDER BY mp.last_updated DESC`,
+         JOIN markets m ON mp.market_id = m.id
+         WHERE mp.price > 0 AND mp.last_updated >= NOW() - INTERVAL '2 hours'
+         ORDER BY mp.price DESC
+         LIMIT 500`,
         []
       );
 
@@ -196,83 +200,53 @@ router.get('/stats', optionalAuthMiddleware, async (req: Request, res: Response,
 });
 
 // Get price comparison across markets
-router.get('/compare/:skinId', optionalAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
-  try {
-    const { skinId } = req.params;
+// Old compare route removed — replaced by cross-market comparison below
 
-    const result = await query(
-      `SELECT mp.market_id, mp.price, mp.volume, mp.quantity, mp.last_updated,
-              CASE
-                WHEN mp.market_id = 'steam' THEN 0.13
-                WHEN mp.market_id = 'buff163' THEN 0.05
-                WHEN mp.market_id = 'skinport' THEN 0.10
-                WHEN mp.market_id = 'csfloat' THEN 0.03
-                ELSE 0
-              END as fee_percent,
-              ROUND((mp.price * (1 + (CASE
-                WHEN mp.market_id = 'steam' THEN 0.13
-                WHEN mp.market_id = 'buff163' THEN 0.05
-                WHEN mp.market_id = 'skinport' THEN 0.10
-                WHEN mp.market_id = 'csfloat' THEN 0.03
-                ELSE 0
-              END)))::numeric, 2) as price_with_fee
-       FROM market_prices mp
-       WHERE mp.skin_id = $1
-       AND mp.last_updated >= NOW() - INTERVAL '1 hour'
-       ORDER BY mp.last_updated DESC, mp.market_id`,
-      [skinId]
-    );
-
-    if (!result.rows.length) {
-      return next(new AppError('No price data found', 404, 'NO_PRICE_DATA'));
-    }
-
-    // Find best buy/sell opportunities
-    const lowestPrice = Math.min(...result.rows.map(r => r.price));
-    const highestPrice = Math.max(...result.rows.map(r => r.price));
-
-    res.json({
-      success: true,
-      data: {
-        prices: result.rows,
-        bestBuy: {
-          market: result.rows.find(r => r.price === lowestPrice)?.market_id,
-          price: lowestPrice,
-        },
-        bestSell: {
-          market: result.rows.find(r => r.price === highestPrice)?.market_id,
-          price: highestPrice,
-        },
-        spread: parseFloat((((highestPrice - lowestPrice) / lowestPrice) * 100).toFixed(2)),
-      },
-    });
-  } catch (error) {
-    next(error);
-  }
-});
-
-// Get market activity feed (recent price updates)
+// Get market activity feed with REAL price changes from history
 router.get('/feed', optionalAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
   try {
     const limit = Math.min(parseInt(req.query.limit as string) || 50, 500);
 
+    // Get skins with real price changes by comparing latest vs previous price_history snapshot
     const result = await query(
-      `SELECT mp.skin_id, s.name, NULL as image_url, mp.market_id, mp.price, mp.volume,
-              mp.last_updated,
-              (SELECT MIN(mp2.price) FROM market_prices mp2 WHERE mp2.skin_id = s.id) as current_price,
-              ROUND(((mp.price - (SELECT MIN(mp2.price) FROM market_prices mp2 WHERE mp2.skin_id = s.id)) / NULLIF((SELECT MIN(mp2.price) FROM market_prices mp2 WHERE mp2.skin_id = s.id), 0) * 100)::numeric, 2) as price_diff_percent
+      `SELECT
+        mp.skin_id, s.name, mp.market_id, m.name as market_name,
+        mp.price as new_price, mp.last_updated,
+        COALESCE(
+          (SELECT ph.price FROM price_history ph
+           WHERE ph.skin_id = mp.skin_id AND ph.market_id = mp.market_id
+             AND ph.timestamp < mp.last_updated - INTERVAL '10 minutes'
+           ORDER BY ph.timestamp DESC LIMIT 1),
+          mp.price
+        ) as previous_price
        FROM market_prices mp
        JOIN skins s ON mp.skin_id = s.id
-       WHERE mp.last_updated >= NOW() - INTERVAL '1 hour'
+       JOIN markets m ON m.id = mp.market_id
+       WHERE mp.price > 0.50 AND mp.last_updated > NOW() - INTERVAL '2 hours'
        ORDER BY mp.last_updated DESC
        LIMIT $1`,
       [limit]
     );
 
-    res.json({
-      success: true,
-      data: result.rows,
+    const data = result.rows.map((r: any) => {
+      const newPrice = parseFloat(r.new_price);
+      const prevPrice = parseFloat(r.previous_price);
+      const change = newPrice - prevPrice;
+      const changePct = prevPrice > 0 ? (change / prevPrice) * 100 : 0;
+      return {
+        skin_id: r.skin_id,
+        name: r.name,
+        market_id: r.market_id,
+        market_name: r.market_name,
+        price: newPrice,
+        previous_price: prevPrice,
+        change: Math.round(change * 100) / 100,
+        change_percent: Math.round(changePct * 100) / 100,
+        last_updated: r.last_updated,
+      };
     });
+
+    res.json({ success: true, data });
   } catch (error) {
     next(error);
   }
@@ -399,6 +373,256 @@ router.get('/search', optionalAuthMiddleware, async (req: Request, res: Response
   } catch (error) {
     next(error);
   }
+});
+
+// ─── Market Index OHLC Candles ───────────────────────
+router.get('/index-candles', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const interval = (req.query.interval as string) || '1h';
+    const limit = Math.min(parseInt(req.query.limit as string) || 100, 500);
+
+    // Map interval to PostgreSQL date_trunc bucket
+    let bucket = '1 hour';
+    let lookback = '7 days';
+    if (interval === '4h') { bucket = '4 hours'; lookback = '30 days'; }
+    else if (interval === '1d') { bucket = '1 day'; lookback = '90 days'; }
+    else if (interval === '1w') { bucket = '1 week'; lookback = '365 days'; }
+    else if (interval === '1h') { bucket = '1 hour'; lookback = '7 days'; }
+
+    const result = await query(
+      `SELECT
+         date_trunc('hour', timestamp) -
+           (EXTRACT(HOUR FROM timestamp)::int % CASE
+             WHEN $1 = '4 hours' THEN 4
+             WHEN $1 = '1 day' THEN 24
+             ELSE 1
+           END) * INTERVAL '1 hour' AS bucket,
+         (array_agg(total_value ORDER BY timestamp ASC))[1] AS open,
+         MAX(total_value) AS high,
+         MIN(total_value) AS low,
+         (array_agg(total_value ORDER BY timestamp DESC))[1] AS close,
+         COUNT(*) AS volume
+       FROM market_index_history
+       WHERE timestamp > NOW() - INTERVAL '${lookback}'
+       GROUP BY bucket
+       ORDER BY bucket ASC
+       LIMIT $2`,
+      [bucket, limit]
+    );
+
+    let candles = result.rows.map((r: any) => ({
+      timestamp: r.bucket,
+      open: parseFloat(r.open),
+      high: parseFloat(r.high),
+      low: parseFloat(r.low),
+      close: parseFloat(r.close),
+      volume: parseInt(r.volume),
+    }));
+
+    // Filter out outlier candles where price jumped more than 500% in one period
+    // (happens during initial data import)
+    if (candles.length > 1) {
+      candles = candles.filter((c: any, i: number) => {
+        if (i === 0) {
+          const next = candles[1];
+          const ratio = c.high / c.low;
+          return ratio < 5; // Skip if high/low ratio > 5x
+        }
+        return true;
+      });
+    }
+
+    res.json({
+      success: true,
+      data: { candles },
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// ─── Cross-market price comparison for a skin ────────
+router.get('/compare/:skinId', optionalAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { skinId } = req.params;
+
+    // Get skin info
+    const skinResult = await query(
+      'SELECT id, name, weapon_name, skin_name, rarity, min_float, max_float FROM skins WHERE id = $1',
+      [skinId]
+    );
+
+    if (!skinResult.rows.length) {
+      return res.status(404).json({ success: false, error: 'Skin not found' });
+    }
+
+    const skin = skinResult.rows[0];
+
+    // Get ALL real prices across ALL markets for this skin, grouped by exterior
+    const pricesResult = await query(
+      `SELECT mp.market_id, m.name as market_name, m.display_name,
+              mp.price, mp.volume, mp.exterior, mp.float_value,
+              mp.custom_name, mp.matched_name, mp.direct_url,
+              mp.last_updated
+       FROM market_prices mp
+       JOIN markets m ON m.id = mp.market_id
+       WHERE mp.skin_id = $1 AND mp.price > 0
+       ORDER BY mp.exterior, mp.price ASC`,
+      [skinId]
+    );
+
+    // Group by exterior, then by market
+    const byExterior: Record<string, any[]> = {};
+    for (const row of pricesResult.rows) {
+      const ext = row.exterior || 'Unknown';
+      if (!byExterior[ext]) byExterior[ext] = [];
+      byExterior[ext].push({
+        market_id: row.market_id,
+        market_name: row.display_name || row.market_name,
+        price: parseFloat(row.price),
+        volume: row.volume,
+        float_value: row.float_value ? parseFloat(row.float_value) : null,
+        custom_name: row.custom_name,
+        direct_url: row.direct_url,
+        last_updated: row.last_updated,
+      });
+    }
+
+    // Find best buy/sell per exterior
+    const comparisons = Object.entries(byExterior).map(([exterior, markets]) => {
+      const sorted = [...markets].sort((a, b) => a.price - b.price);
+      const cheapest = sorted[0];
+      const mostExpensive = sorted[sorted.length - 1];
+      const spread = sorted.length >= 2
+        ? mostExpensive.price - cheapest.price
+        : 0;
+      const spreadPercent = cheapest.price > 0
+        ? (spread / cheapest.price) * 100
+        : 0;
+
+      return {
+        exterior,
+        markets,
+        cheapest,
+        mostExpensive: sorted.length >= 2 ? mostExpensive : null,
+        spread: Math.round(spread * 100) / 100,
+        spreadPercent: Math.round(spreadPercent * 100) / 100,
+        marketCount: markets.length,
+      };
+    });
+
+    res.json({
+      success: true,
+      skin,
+      comparisons,
+      totalMarkets: new Set(pricesResult.rows.map((r: any) => r.market_id)).size,
+      totalListings: pricesResult.rows.length,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+// Market sentiment — buy/sell pressure indicator
+router.get('/sentiment', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    // Calculate sentiment from price movements:
+    // - Count skins where current price > 7d avg (bullish) vs < 7d avg (bearish)
+    // - Use real price stats
+    const result = await query(
+      `SELECT
+         COUNT(CASE WHEN mp_min < ps.avg_price_7d THEN 1 END) as bearish_count,
+         COUNT(CASE WHEN mp_min >= ps.avg_price_7d THEN 1 END) as bullish_count,
+         COUNT(*) as total
+       FROM price_statistics ps
+       JOIN LATERAL (
+         SELECT MIN(mp.price) as mp_min FROM market_prices mp
+         WHERE mp.skin_id = ps.skin_id AND mp.price > 0
+       ) mp ON TRUE
+       WHERE ps.avg_price_7d > 0 AND mp.mp_min > 0`
+    );
+
+    const r = result.rows[0];
+    const total = parseInt(r.total) || 1;
+    const bullish = parseInt(r.bullish_count) || 0;
+    const bearish = parseInt(r.bearish_count) || 0;
+    const bullishPct = Math.round((bullish / total) * 100);
+    const bearishPct = Math.round((bearish / total) * 100);
+
+    let sentiment: 'extreme_fear' | 'fear' | 'neutral' | 'greed' | 'extreme_greed';
+    let score: number;
+
+    if (bullishPct >= 70) { sentiment = 'extreme_greed'; score = 80 + Math.round((bullishPct - 70) / 3); }
+    else if (bullishPct >= 55) { sentiment = 'greed'; score = 60 + Math.round((bullishPct - 55) / 1.5); }
+    else if (bullishPct >= 45) { sentiment = 'neutral'; score = 45 + Math.round((bullishPct - 45)); }
+    else if (bullishPct >= 30) { sentiment = 'fear'; score = 20 + Math.round((bullishPct - 30) * 1.5); }
+    else { sentiment = 'extreme_fear'; score = Math.max(0, Math.round(bullishPct * 0.7)); }
+
+    // Volume trend
+    const volumeResult = await query(
+      `SELECT ROUND(AVG(trading_volume_7d)::numeric, 0) as avg_vol,
+              ROUND(AVG(trading_volume_30d)::numeric, 0) as avg_vol_30d
+       FROM price_statistics WHERE trading_volume_7d > 0`
+    );
+    const vol7 = parseInt(volumeResult.rows[0]?.avg_vol || 0);
+    const vol30 = parseInt(volumeResult.rows[0]?.avg_vol_30d || 0);
+    const volumeTrend = vol30 > 0 ? Math.round(((vol7 - vol30 / 4.29) / (vol30 / 4.29)) * 100) : 0;
+
+    res.json({
+      success: true,
+      data: {
+        sentiment,
+        score: Math.min(100, Math.max(0, score)),
+        bullishPercent: bullishPct,
+        bearishPercent: bearishPct,
+        bullishCount: bullish,
+        bearishCount: bearish,
+        totalTracked: total,
+        volumeTrend,
+        description: sentiment === 'extreme_greed' ? 'Market is highly bullish — most skins trading above average'
+          : sentiment === 'greed' ? 'Market is trending up — majority of skins above 7-day average'
+          : sentiment === 'neutral' ? 'Market is balanced — roughly equal bullish and bearish movement'
+          : sentiment === 'fear' ? 'Market is trending down — many skins below 7-day average'
+          : 'Market is highly bearish — most skins trading below average, potential buying opportunities',
+      },
+    });
+  } catch (error) { next(error); }
+});
+
+// Price predictions for a skin
+router.get('/predict/:skinId', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const { predictPrice } = await import('../../engines/predictionEngine');
+    const skinId = parseInt(req.params.skinId);
+    if (isNaN(skinId)) return res.status(400).json({ error: 'Invalid skin ID' });
+
+    const prediction = await predictPrice(skinId);
+    if (!prediction) return res.status(404).json({ error: 'No prediction available — insufficient data' });
+
+    res.json({ success: true, data: prediction });
+  } catch (error) { next(error); }
+});
+
+// Top predictions — biggest expected movers
+router.get('/predictions/top', async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 50);
+
+    const result = await query(
+      `SELECT pp.skin_id, s.name, pp.predicted_price, pp.confidence_score,
+              pp.trend_direction, pp.prediction_strength,
+              pp.moving_avg_7d, pp.moving_avg_30d, pp.volatility_forecast,
+              (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) as current_price
+       FROM price_predictions pp
+       JOIN skins s ON s.id = pp.skin_id
+       WHERE pp.prediction_date = CURRENT_DATE
+       ORDER BY ABS(pp.predicted_price - (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0)) DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    res.json({ success: true, data: result.rows });
+  } catch (error) { next(error); }
 });
 
 export default router;

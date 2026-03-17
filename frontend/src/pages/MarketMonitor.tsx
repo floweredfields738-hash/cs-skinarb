@@ -2,11 +2,11 @@ import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   Search,
   Monitor,
-  BarChart3,
   X,
 } from 'lucide-react';
 import { marketApi } from '../api/services';
 import CandlestickChart from '../components/dashboard/CandlestickChart';
+import CrossMarketComparison from '../components/dashboard/CrossMarketComparison';
 import { useConnectionStatus } from '../hooks/useRealTimeData';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -19,13 +19,6 @@ interface SkinResult {
   rarity: string;
   current_price: number | string | null;
 }
-
-const MARKET_OPTIONS = [
-  { id: 1, name: 'Steam', color: '#4a90d9' },
-  { id: 2, name: 'Buff163', color: '#f5a623' },
-  { id: 3, name: 'Skinport', color: '#9b59b6' },
-  { id: 4, name: 'CSFloat', color: '#2ecc71' },
-];
 
 const RARITY_COLORS: Record<string, string> = {
   Covert: '#eb4b4b',
@@ -40,6 +33,42 @@ const RARITY_COLORS: Record<string, string> = {
 function clsx(...classes: (string | boolean | undefined | null)[]): string {
   return classes.filter(Boolean).join(' ');
 }
+
+// ── Default: Full Market Index Candlestick Chart ─────────────────────────────
+
+const MarketOverviewChart: React.FC<{ onSearchHint: (q: string) => void }> = ({ onSearchHint }) => {
+  return (
+    <div className="space-y-4">
+      {/* Full-screen market index candlestick chart */}
+      <div className="h-[calc(100vh-280px)] min-h-[550px]">
+        <CandlestickChart
+          skinId={0}
+          marketId={0}
+          skinName="CS2 Market Index — All Markets"
+          height={0}
+          showIntervalSelector={true}
+          showVolume={true}
+          className="h-full"
+          indexMode={true}
+        />
+      </div>
+
+      {/* Quick search hints */}
+      <div className="flex items-center justify-center gap-2 flex-wrap">
+        <span className="text-[10px] text-gray-600 font-mono">Search a skin for detailed cross-market analysis:</span>
+        {['AK-47 Redline', 'AWP Dragon Lore', 'Karambit Fade', 'M4A4 Howl', 'Butterfly Knife'].map((hint) => (
+          <button
+            key={hint}
+            onClick={() => onSearchHint(hint)}
+            className="px-3 py-1.5 rounded-lg text-[10px] font-mono text-gray-400 bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] hover:text-gray-300 transition-all"
+          >
+            {hint}
+          </button>
+        ))}
+      </div>
+    </div>
+  );
+};
 
 // ── Component ────────────────────────────────────────────────────────────────
 
@@ -56,9 +85,6 @@ const MarketMonitor: React.FC = () => {
 
   // Selected skins for comparison
   const [selectedSkins, setSelectedSkins] = useState<SkinResult[]>([]);
-
-  // Active market for each chart
-  const [activeMarkets, setActiveMarkets] = useState<Record<number, number>>({});
 
   // Click outside to close search
   useEffect(() => {
@@ -106,15 +132,6 @@ const MarketMonitor: React.FC = () => {
 
   const removeSkin = useCallback((skinId: number) => {
     setSelectedSkins((prev) => prev.filter((s) => s.id !== skinId));
-    setActiveMarkets((prev) => {
-      const next = { ...prev };
-      delete next[skinId];
-      return next;
-    });
-  }, []);
-
-  const setMarketForSkin = useCallback((skinId: number, marketId: number) => {
-    setActiveMarkets((prev) => ({ ...prev, [skinId]: marketId }));
   }, []);
 
   return (
@@ -126,7 +143,7 @@ const MarketMonitor: React.FC = () => {
             <Monitor className="w-5 h-5 text-cyan-glow" />
           </div>
           <div>
-            <h1 className="text-2xl font-bold text-white tracking-tight">Market Monitor</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">Market Monitor</h1>
             <p className="text-[11px] text-gray-500 font-mono mt-0.5">
               Cross-market candlestick analysis &bull; Search any skin
             </p>
@@ -235,37 +252,15 @@ const MarketMonitor: React.FC = () => {
 
       {/* Charts grid */}
       {selectedSkins.length === 0 ? (
-        <div className="glass-panel p-12 flex flex-col items-center justify-center text-center">
-          <div className="p-4 rounded-2xl bg-cyan-glow/[0.05] border border-cyan-glow/10 mb-4">
-            <BarChart3 className="w-8 h-8 text-cyan-glow/40" />
-          </div>
-          <h3 className="text-lg font-bold text-white mb-2">No Skins Selected</h3>
-          <p className="text-sm text-gray-500 max-w-md">
-            Search for any CS2 skin above to add it to the market monitor. You can compare
-            candlestick charts across multiple skins and markets simultaneously.
-          </p>
-          <div className="flex flex-wrap gap-2 mt-6">
-            {['AK-47', 'AWP', 'Karambit', 'M4A4', 'Desert Eagle'].map((hint) => (
-              <button
-                key={hint}
-                onClick={() => handleSearch(hint)}
-                className="px-3 py-1.5 rounded-lg text-[11px] font-mono text-gray-400 bg-white/[0.03] border border-white/[0.06] hover:bg-white/[0.06] hover:text-gray-300 transition-all"
-              >
-                <Search className="w-3 h-3 inline mr-1.5" />
-                {hint}
-              </button>
-            ))}
-          </div>
-        </div>
+        <MarketOverviewChart onSearchHint={handleSearch} />
       ) : (
         <div className="space-y-6">
           {selectedSkins.map((skin) => {
-            const currentMarketId = activeMarkets[skin.id] || 1;
             const price = skin.current_price ? parseFloat(String(skin.current_price)) : null;
 
             return (
               <div key={skin.id} className="space-y-2">
-                {/* Skin header with market selector */}
+                {/* Skin header */}
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-3">
                     <div
@@ -279,47 +274,25 @@ const MarketMonitor: React.FC = () => {
                     {price !== null && (
                       <span className="text-[12px] font-mono text-gray-400">${price.toFixed(2)}</span>
                     )}
+                    <span className="text-[11px] text-gray-500 font-mono">All markets</span>
                   </div>
 
-                  <div className="flex items-center gap-2">
-                    {/* Market selector */}
-                    <div className="flex items-center gap-1">
-                      {MARKET_OPTIONS.map((m) => (
-                        <button
-                          key={m.id}
-                          onClick={() => setMarketForSkin(skin.id, m.id)}
-                          className={clsx(
-                            'px-2.5 py-1 rounded-lg text-[10px] font-bold font-mono transition-all duration-200',
-                            currentMarketId === m.id
-                              ? 'text-white border'
-                              : 'text-gray-500 hover:text-gray-300 hover:bg-white/[0.04]'
-                          )}
-                          style={
-                            currentMarketId === m.id
-                              ? { backgroundColor: `${m.color}18`, borderColor: `${m.color}40`, color: m.color }
-                              : undefined
-                          }
-                        >
-                          {m.name}
-                        </button>
-                      ))}
-                    </div>
-
-                    {/* Remove button */}
-                    <button
-                      onClick={() => removeSkin(skin.id)}
-                      className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
-                    >
-                      <X className="w-3.5 h-3.5" />
-                    </button>
-                  </div>
+                  <button
+                    onClick={() => removeSkin(skin.id)}
+                    className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
                 </div>
 
-                {/* Candlestick chart */}
+                {/* Cross-market price comparison */}
+                <CrossMarketComparison skinId={skin.id} skinName={skin.name} />
+
+                {/* Candlestick chart — shows primary market candles + all other markets as overlays */}
                 <div className="h-[calc(100vh-320px)] min-h-[500px]">
                   <CandlestickChart
                     skinId={skin.id}
-                    marketId={currentMarketId}
+                    marketId={3}
                     skinName={skin.name}
                     height={0}
                     showIntervalSelector={true}

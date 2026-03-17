@@ -1,398 +1,188 @@
-import React, { useState, useMemo, useEffect, useRef } from 'react';
+import React, { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import {
-  Star,
-  Plus,
-  Trash2,
-  ArrowUpRight,
-  ArrowDownRight,
-  ArrowUpDown,
-  Eye,
-  Search,
-  Target,
-  TrendingUp,
+  Star, Plus, Trash2, ArrowUpDown,
+  Eye, Search, Target, TrendingUp, Bell,
 } from 'lucide-react';
-import { useLiveSkinsList, useConnectionStatus } from '../hooks/useRealTimeData';
-
-// ── Helpers ──────────────────────────────────────────────────────────────────
+import { watchlistApi, marketApi } from '../api/services';
+import { useConnectionStatus } from '../hooks/useRealTimeData';
+import AnimatedNumber from '../components/common/AnimatedNumber';
 
 function clsx(...classes: (string | boolean | undefined | null)[]): string {
   return classes.filter(Boolean).join(' ');
 }
 
-// Seeded random for deterministic sparkline generation per skin
-function seededRandom(seed: number) {
-  let x = Math.sin(seed) * 10000;
-  return x - Math.floor(x);
-}
-
-function generateSparklineFromSeed(seed: number, basePrice: number): number[] {
-  const points: number[] = [];
-  let val = basePrice * 0.95;
-  for (let i = 0; i < 10; i++) {
-    val += (seededRandom(seed + i * 13) - 0.45) * basePrice * 0.03;
-    val = Math.max(basePrice * 0.85, Math.min(basePrice * 1.15, val));
-    points.push(val);
-  }
-  return points;
-}
-
 const RARITY_COLORS: Record<string, string> = {
-  Covert: '#eb4b4b',
-  Classified: '#d32ee6',
-  Restricted: '#8847ff',
-  'Mil-Spec': '#4b69ff',
-  'Mil-Spec Grade': '#4b69ff',
-  Industrial: '#5e98d9',
-  'Industrial Grade': '#5e98d9',
-  Consumer: '#b0c3d9',
-  'Consumer Grade': '#b0c3d9',
+  Covert: '#eb4b4b', Classified: '#d32ee6', Restricted: '#8847ff',
+  'Mil-Spec': '#4b69ff', 'Industrial Grade': '#5e98d9', 'Consumer Grade': '#b0c3d9',
+  Extraordinary: '#e4ae39',
 };
 
-type SortKey = 'price' | 'change' | 'score';
-
-// ── Mini Sparkline SVG ───────────────────────────────────────────────────────
-
-function Sparkline({ data, positive }: { data: number[]; positive: boolean }) {
-  const max = Math.max(...data);
-  const min = Math.min(...data);
-  const range = max - min || 1;
-
-  const pathD = data
-    .map((val, i) => {
-      const x = (i / (data.length - 1)) * 100;
-      const y = 100 - ((val - min) / range) * 80 - 10;
-      return `${i === 0 ? 'M' : 'L'} ${x} ${y}`;
-    })
-    .join(' ');
-
-  const color = positive ? '#34d399' : '#f87171';
-
-  return (
-    <svg viewBox="0 0 100 100" className="w-full h-10" preserveAspectRatio="none">
-      <defs>
-        <linearGradient id={`spark-${positive ? 'up' : 'down'}`} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={`${color}30`} />
-          <stop offset="100%" stopColor={`${color}00`} />
-        </linearGradient>
-      </defs>
-      <path d={pathD + ' L 100 100 L 0 100 Z'} fill={`url(#spark-${positive ? 'up' : 'down'})`} />
-      <path d={pathD} fill="none" stroke={color} strokeWidth="2" vectorEffect="non-scaling-stroke" />
-    </svg>
-  );
-}
-
-// ── Watchlist Card ───────────────────────────────────────────────────────────
-
-interface WatchlistCardItem {
-  id: string;
+interface WatchlistItem {
+  id: number;
+  skin_id: number;
   name: string;
-  weapon: string;
-  skinName: string;
-  price: number;
-  change24h: number;
-  changePct24h: number;
-  opportunityScore: number;
-  sparkline: number[];
+  weapon_name: string;
+  skin_name: string;
   rarity: string;
-  rarityColor: string;
-  _flash?: boolean;
+  min_float: number;
+  max_float: number;
+  current_price: number | null;
+  target_price: number | null;
+  hit_target: boolean;
+  market_count: number;
+  added_at: string;
 }
 
-function WatchlistCard({
-  item,
-  onRemove,
-}: {
-  item: WatchlistCardItem;
-  onRemove: (id: string) => void;
-}) {
-  const isPositive = item.changePct24h >= 0;
-  const scoreColor =
-    item.opportunityScore >= 80
-      ? 'text-cyan-glow'
-      : item.opportunityScore >= 60
-      ? 'text-gold-400'
-      : 'text-gray-400';
-
-  return (
-    <Link to={`/skins/${item.id}`} className="block group">
-      <div className={clsx(
-        'glass-panel-hover p-5 h-full relative overflow-hidden',
-        item._flash && 'watchlist-flash-card'
-      )}>
-        {/* Rarity accent line at top */}
-        <div
-          className="absolute top-0 left-0 right-0 h-[2px]"
-          style={{
-            background: `linear-gradient(90deg, transparent, ${item.rarityColor}80, transparent)`,
-          }}
-        />
-
-        {/* Header */}
-        <div className="flex items-start justify-between mb-3">
-          <div className="flex-1 min-w-0">
-            <p className="text-sm font-semibold text-white truncate group-hover:text-cyan-glow/90 transition-colors">
-              {item.name}
-            </p>
-            <div className="flex items-center gap-2 mt-1">
-              <span
-                className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
-                style={{
-                  backgroundColor: `${item.rarityColor}18`,
-                  color: item.rarityColor,
-                }}
-              >
-                {item.rarity}
-              </span>
-            </div>
-          </div>
-          <button
-            onClick={(e) => {
-              e.preventDefault();
-              e.stopPropagation();
-              onRemove(item.id);
-            }}
-            className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all opacity-0 group-hover:opacity-100"
-            title="Remove from watchlist"
-          >
-            <Trash2 className="w-3.5 h-3.5" />
-          </button>
-        </div>
-
-        {/* Price + Change */}
-        <div className="flex items-end justify-between mb-3">
-          <div>
-            <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Price</p>
-            <p className="text-xl font-bold font-mono text-white tracking-tight">
-              ${item.price < 1000 ? item.price.toFixed(2) : item.price.toLocaleString('en-US', { minimumFractionDigits: 0 })}
-            </p>
-          </div>
-          <div className={clsx(
-            'flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-bold font-mono',
-            isPositive ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
-          )}>
-            {isPositive
-              ? <ArrowUpRight className="w-3 h-3" />
-              : <ArrowDownRight className="w-3 h-3" />}
-            {isPositive ? '+' : ''}{item.changePct24h.toFixed(2)}%
-          </div>
-        </div>
-
-        {/* Sparkline */}
-        <div className="mb-3 -mx-1">
-          <Sparkline data={item.sparkline} positive={isPositive} />
-        </div>
-
-        {/* Opportunity Score */}
-        <div className="flex items-center justify-between pt-3 border-t border-white/[0.04]">
-          <div className="flex items-center gap-2">
-            <Target className="w-3.5 h-3.5 text-gray-500" />
-            <span className="text-[10px] text-gray-500 uppercase tracking-wider">Opportunity</span>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="w-14 bg-carbon-900/80 rounded-full h-1.5">
-              <div
-                className="h-1.5 rounded-full transition-all duration-500"
-                style={{
-                  width: `${item.opportunityScore}%`,
-                  background:
-                    item.opportunityScore >= 80
-                      ? 'linear-gradient(90deg, rgba(0, 229, 255, 0.7), rgba(0, 229, 255, 1))'
-                      : item.opportunityScore >= 60
-                      ? 'linear-gradient(90deg, rgba(245, 158, 11, 0.6), rgba(252, 211, 77, 0.9))'
-                      : 'linear-gradient(90deg, rgba(156, 163, 175, 0.4), rgba(156, 163, 175, 0.6))',
-                  boxShadow:
-                    item.opportunityScore >= 80
-                      ? '0 0 6px rgba(0, 229, 255, 0.4)'
-                      : item.opportunityScore >= 60
-                      ? '0 0 6px rgba(245, 158, 11, 0.3)'
-                      : 'none',
-                }}
-              />
-            </div>
-            <span className={clsx('text-sm font-bold font-mono', scoreColor)}>
-              {item.opportunityScore}
-            </span>
-          </div>
-        </div>
-      </div>
-    </Link>
-  );
-}
-
-// ── Empty State ──────────────────────────────────────────────────────────────
-
-function EmptyState() {
-  return (
-    <div className="glass-panel p-12 flex flex-col items-center justify-center text-center">
-      <div className="p-4 rounded-2xl bg-cyan-glow/[0.06] mb-5">
-        <Eye className="w-10 h-10 text-cyan-glow/40" />
-      </div>
-      <h3 className="text-lg font-bold text-white mb-2">No skins in your watchlist</h3>
-      <p className="text-sm text-gray-500 max-w-sm mb-6">
-        Add skins to your watchlist to track prices, monitor opportunities, and get alerts on market movements.
-      </p>
-      <Link
-        to="/"
-        className="flex items-center gap-2 px-5 py-2.5 rounded-xl bg-cyan-glow/10 border border-cyan-glow/20 text-cyan-glow text-[13px] font-bold hover:bg-cyan-glow/20 transition-all"
-      >
-        <Plus className="w-4 h-4" />
-        Browse Skins
-      </Link>
-    </div>
-  );
-}
-
-// ── Main Component ───────────────────────────────────────────────────────────
+type SortKey = 'price' | 'name' | 'added';
 
 const Watchlist: React.FC = () => {
-  const { skins, loading } = useLiveSkinsList();
   const connected = useConnectionStatus();
-  const [removedIds, setRemovedIds] = useState<Set<string>>(new Set());
-  const [sortBy, setSortBy] = useState<SortKey>('score');
+  const [items, setItems] = useState<WatchlistItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [sortBy, setSortBy] = useState<SortKey>('added');
   const [searchQuery, setSearchQuery] = useState('');
-  const [secondsAgo, setSecondsAgo] = useState(0);
-  const lastUpdateRef = useRef(Date.now());
-  const sparklineCacheRef = useRef<Record<string, number[]>>({});
+  const [editingTarget, setEditingTarget] = useState<number | null>(null);
+  const [targetInput, setTargetInput] = useState('');
+  const [addQuery, setAddQuery] = useState('');
+  const [addResults, setAddResults] = useState<any[]>([]);
+  const [addLoading, setAddLoading] = useState(false);
+  const [showAddResults, setShowAddResults] = useState(false);
+  const addRef = useRef<HTMLDivElement>(null);
+  const addDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // Reset timer on data change
-  useEffect(() => {
-    if (skins.length > 0) {
-      lastUpdateRef.current = Date.now();
-      setSecondsAgo(0);
-    }
-  }, [skins]);
-
-  // Tick timer
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setSecondsAgo(Math.floor((Date.now() - lastUpdateRef.current) / 1000));
-    }, 1000);
-    return () => clearInterval(interval);
+  // Fetch watchlist
+  const fetchWatchlist = useCallback(() => {
+    watchlistApi.get()
+      .then(res => {
+        if (res.data?.success) {
+          setItems(res.data.items || []);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
   }, []);
 
-  // Transform skins to watchlist items (first 8, excluding removed)
-  const watchlistItems = useMemo(() => {
-    const available = skins.filter((s: any) => {
-      const id = String(s.id || '');
-      return !removedIds.has(id);
-    });
+  useEffect(() => {
+    fetchWatchlist();
+    // Refresh every 30 seconds for live prices
+    const interval = setInterval(fetchWatchlist, 30000);
+    return () => clearInterval(interval);
+  }, [fetchWatchlist]);
 
-    return available.slice(0, 8).map((skin: any) => {
-      const id = String(skin.id || '');
-      const price = parseFloat(skin.current_price) || 0;
-      const changePct = parseFloat(skin.change_24h) || 0;
-      const changeAmt = price * (changePct / 100);
-      const rarity = skin.rarity || 'Mil-Spec';
-      const rarityColor = RARITY_COLORS[rarity] || RARITY_COLORS['Mil-Spec'];
-      const seed = typeof skin.id === 'number' ? skin.id : parseInt(skin.id, 10) || 1;
+  // Click outside to close search results
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (addRef.current && !addRef.current.contains(e.target as Node)) setShowAddResults(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
-      // Compute opportunity score from change and price
-      const absChange = Math.abs(changePct);
-      const opportunityScore = Math.min(99, Math.max(20, Math.round(50 + absChange * 5 + seededRandom(seed + 99) * 20)));
+  // Search for skins to add
+  const handleAddSearch = useCallback((q: string) => {
+    setAddQuery(q);
+    if (addDebounceRef.current) clearTimeout(addDebounceRef.current);
+    if (q.length < 2) { setAddResults([]); setShowAddResults(false); return; }
+    setAddLoading(true);
+    addDebounceRef.current = setTimeout(() => {
+      marketApi.searchSkins(q, 15)
+        .then(res => {
+          const data = res.data?.data || res.data || [];
+          setAddResults(Array.isArray(data) ? data : []);
+          setShowAddResults(true);
+        })
+        .catch(() => setAddResults([]))
+        .finally(() => setAddLoading(false));
+    }, 300);
+  }, []);
 
-      // Generate or shift sparkline
-      let sparkline = sparklineCacheRef.current[id];
-      if (!sparkline) {
-        sparkline = generateSparklineFromSeed(seed, price);
-        sparklineCacheRef.current[id] = sparkline;
-      }
-      // If price updated (_flash), shift the sparkline
-      if (skin._flash && sparkline.length > 0) {
-        const shifted = [...sparkline.slice(1), price];
-        sparklineCacheRef.current[id] = shifted;
-        sparkline = shifted;
-      }
-
-      const name = skin.name || `${skin.weapon_name || 'Unknown'} | ${skin.skin_name || 'Skin'}`;
-      const weapon = skin.weapon_name || name.split('|')[0].trim();
-      const skinName = skin.skin_name || (name.includes('|') ? name.split('|')[1].trim() : name);
-
-      return {
-        id,
-        name,
-        weapon,
-        skinName,
-        price,
-        change24h: changeAmt,
-        changePct24h: changePct,
-        opportunityScore,
-        sparkline,
-        rarity,
-        rarityColor,
-        _flash: skin._flash || false,
-      } as WatchlistCardItem;
-    });
-  }, [skins, removedIds]);
-
-  const handleRemove = (id: string) => {
-    setRemovedIds((prev) => new Set([...prev, id]));
+  // Add skin from search results
+  const handleAddSkin = async (skinId: number) => {
+    try {
+      await watchlistApi.add(skinId);
+      setShowAddResults(false);
+      setAddQuery('');
+      fetchWatchlist(); // Refresh the list
+    } catch {}
   };
 
-  const filteredAndSorted = useMemo(() => {
-    let result = [...watchlistItems];
+  // Remove from watchlist
+  const handleRemove = async (skinId: number) => {
+    try {
+      await watchlistApi.remove(skinId);
+      setItems(prev => prev.filter(i => i.skin_id !== skinId));
+    } catch {}
+  };
 
-    // Filter by search
+  // Set target price
+  const handleSetTarget = async (skinId: number) => {
+    const price = parseFloat(targetInput);
+    if (isNaN(price) || price <= 0) return;
+    try {
+      await watchlistApi.updateTarget(skinId, price);
+      setItems(prev => prev.map(i =>
+        i.skin_id === skinId ? { ...i, target_price: price, hit_target: i.current_price !== null && i.current_price <= price } : i
+      ));
+      setEditingTarget(null);
+      setTargetInput('');
+    } catch {}
+  };
+
+  // Filter and sort
+  const filteredItems = useMemo(() => {
+    let result = [...items];
+
     if (searchQuery.trim()) {
       const q = searchQuery.toLowerCase();
-      result = result.filter(
-        (item) =>
-          item.name.toLowerCase().includes(q) ||
-          item.weapon.toLowerCase().includes(q) ||
-          item.skinName.toLowerCase().includes(q)
-      );
+      result = result.filter(i => i.name.toLowerCase().includes(q));
     }
 
-    // Sort
     switch (sortBy) {
       case 'price':
-        result.sort((a, b) => b.price - a.price);
+        result.sort((a, b) => (b.current_price || 0) - (a.current_price || 0));
         break;
-      case 'change':
-        result.sort((a, b) => b.changePct24h - a.changePct24h);
+      case 'name':
+        result.sort((a, b) => a.name.localeCompare(b.name));
         break;
-      case 'score':
-        result.sort((a, b) => b.opportunityScore - a.opportunityScore);
+      case 'added':
+        result.sort((a, b) => new Date(b.added_at).getTime() - new Date(a.added_at).getTime());
         break;
     }
 
     return result;
-  }, [watchlistItems, sortBy, searchQuery]);
+  }, [items, sortBy, searchQuery]);
 
-  // Summary stats from live data
-  const totalValue = watchlistItems.reduce((sum, item) => sum + item.price, 0);
-  const totalChange = watchlistItems.reduce((sum, item) => sum + item.change24h, 0);
-  const risingCount = watchlistItems.filter((i) => i.changePct24h > 0).length;
-  const fallingCount = watchlistItems.filter((i) => i.changePct24h < 0).length;
-  const avgScore = watchlistItems.length > 0
-    ? Math.round(watchlistItems.reduce((sum, item) => sum + item.opportunityScore, 0) / watchlistItems.length)
-    : 0;
+  // Stats
+  const totalValue = items.reduce((sum, i) => sum + (i.current_price || 0), 0);
+  const alertCount = items.filter(i => i.hit_target).length;
 
-  const showEmpty = !loading && watchlistItems.length === 0;
+  if (loading) {
+    return (
+      <div className="space-y-6 max-w-[1600px] mx-auto fade-in">
+        <div className="flex items-center gap-3 mb-1">
+          <Star className="w-5 h-5 text-gold-400" />
+          <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">Watchlist</h1>
+        </div>
+        <div className="glass-panel p-12 flex items-center justify-center">
+          <div className="w-6 h-6 border-2 border-cyan-glow/30 border-t-cyan-glow rounded-full animate-spin" />
+          <span className="ml-3 text-sm text-gray-500 font-mono">Loading watchlist...</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-6 max-w-[1600px] mx-auto fade-in">
-      {/* Flash animation */}
-      <style>{`
-        @keyframes watchlistCardPulse {
-          0% { box-shadow: inset 0 0 20px rgba(0, 229, 255, 0.15); }
-          100% { box-shadow: inset 0 0 0px transparent; }
-        }
-        .watchlist-flash-card {
-          animation: watchlistCardPulse 1s ease-out forwards;
-        }
-      `}</style>
-
-      {/* ═══════════════ HEADER ═══════════════ */}
+      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
         <div>
           <div className="flex items-center gap-3 mb-1">
             <Star className="w-5 h-5 text-gold-400" />
-            <h1 className="text-2xl font-bold text-white tracking-tight">Watchlist</h1>
+            <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">Watchlist</h1>
           </div>
           <p className="text-sm text-gray-500">
-            Tracking <span className="text-gray-300 font-mono font-bold">{watchlistItems.length}</span> skins
-            &bull; Updated <span className="text-gray-400 font-mono">{secondsAgo}s ago</span>
+            Tracking <span className="text-gray-300 font-mono font-bold">{items.length}</span> skins
             {connected && (
               <span className="ml-2">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-cyan-glow animate-pulse mr-1" />
@@ -401,72 +191,99 @@ const Watchlist: React.FC = () => {
             )}
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <button className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-cyan-glow/10 border border-cyan-glow/20 text-cyan-glow text-[12px] font-bold hover:bg-cyan-glow/20 transition-all">
-            <Plus className="w-3.5 h-3.5" />
-            Add Skin
-          </button>
+        {/* Add skin search */}
+        <div className="relative w-full md:w-80" ref={addRef}>
+          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+          <input
+            type="text"
+            value={addQuery}
+            onChange={e => handleAddSearch(e.target.value)}
+            onFocus={() => addResults.length > 0 && setShowAddResults(true)}
+            placeholder="Search skins to add..."
+            className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-carbon-800/60 border border-white/[0.06] text-sm text-white placeholder-gray-600 font-mono focus:outline-none focus:border-cyan-glow/30 transition-all"
+          />
+          {addLoading && (
+            <div className="absolute right-3 top-1/2 -translate-y-1/2">
+              <div className="w-4 h-4 border-2 border-cyan-glow/30 border-t-cyan-glow rounded-full animate-spin" />
+            </div>
+          )}
+          {showAddResults && addResults.length > 0 && (
+            <div className="absolute top-full left-0 right-0 mt-2 rounded-xl bg-carbon-800/95 backdrop-blur-xl border border-white/[0.08] shadow-2xl max-h-80 overflow-y-auto" style={{ zIndex: 9999 }}>
+              {addResults.map((skin: any) => {
+                const alreadyAdded = items.some(i => i.skin_id === skin.id);
+                const price = skin.current_price ? parseFloat(String(skin.current_price)) : null;
+                const rarityColor = RARITY_COLORS[skin.rarity] || '#6b7280';
+                return (
+                  <button
+                    key={skin.id}
+                    onClick={() => !alreadyAdded && handleAddSkin(skin.id)}
+                    disabled={alreadyAdded}
+                    className={`w-full flex items-center gap-3 px-4 py-3 text-left transition-all border-b border-white/[0.03] last:border-b-0 ${
+                      alreadyAdded ? 'opacity-40 cursor-not-allowed' : 'hover:bg-white/[0.04] cursor-pointer'
+                    }`}
+                  >
+                    <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ backgroundColor: rarityColor }} />
+                    <div className="flex-1 min-w-0">
+                      <div className="text-[13px] text-white font-medium truncate">{skin.name}</div>
+                      <div className="text-[10px] text-gray-500 font-mono uppercase tracking-wider">{skin.rarity}</div>
+                    </div>
+                    {price !== null && (
+                      <span className="text-[12px] font-mono text-gray-300 flex-shrink-0">${price.toFixed(2)}</span>
+                    )}
+                    {alreadyAdded ? (
+                      <span className="text-[10px] text-gold-400 font-mono flex-shrink-0">Watching</span>
+                    ) : (
+                      <Plus className="w-4 h-4 text-cyan-glow/50 flex-shrink-0" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          )}
         </div>
       </div>
 
-      {showEmpty ? (
-        <EmptyState />
+      {items.length === 0 ? (
+        /* Empty state */
+        <div className="glass-panel p-12 flex flex-col items-center justify-center text-center">
+          <div className="p-4 rounded-2xl bg-cyan-glow/[0.06] mb-5">
+            <Eye className="w-10 h-10 text-cyan-glow/40" />
+          </div>
+          <h3 className="text-lg font-bold text-white mb-2">No skins in your watchlist</h3>
+          <p className="text-sm text-gray-500 max-w-sm mb-6">
+            Search for skins on the Market Monitor or Skin Detail pages and click "Add to Watchlist" to start tracking prices.
+          </p>
+          <p className="text-[11px] text-gray-600 font-mono">Use the search bar above to find and add skins</p>
+        </div>
       ) : (
         <>
-          {/* ═══════════════ SUMMARY STATS ═══════════════ */}
+          {/* Summary stats */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            <div className="glass-panel-hover p-5">
+            <div className="glass-panel p-5">
               <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wider">Watchlist Value</p>
-              <h3 className="text-2xl font-bold text-white mt-2 font-mono tracking-tight">
-                ${totalValue.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-              </h3>
-              <div className="flex items-center gap-1.5 mt-2">
-                <div className={clsx(
-                  'px-1.5 py-0.5 rounded text-[11px] font-bold font-mono',
-                  totalChange >= 0 ? 'bg-emerald-500/10 text-emerald-400' : 'bg-red-500/10 text-red-400'
-                )}>
-                  {totalChange >= 0 ? '\u25b2' : '\u25bc'} ${Math.abs(totalChange).toFixed(2)}
-                </div>
-                <span className="text-[10px] text-gray-600">24h</span>
+              <div className="mt-2">
+                <AnimatedNumber value={totalValue} prefix="$" decimals={2} duration={500} className="text-2xl font-bold text-white font-mono" />
               </div>
             </div>
-
-            <div className="glass-panel-hover p-5">
+            <div className="glass-panel p-5">
               <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wider">Items Tracked</p>
-              <h3 className="text-2xl font-bold text-white mt-2 font-mono tracking-tight">{watchlistItems.length}</h3>
-              <div className="flex items-center gap-1.5 mt-2">
-                <div className="px-1.5 py-0.5 rounded text-[11px] font-bold font-mono bg-emerald-500/10 text-emerald-400">
-                  {risingCount} rising
-                </div>
-                <div className="px-1.5 py-0.5 rounded text-[11px] font-bold font-mono bg-red-500/10 text-red-400">
-                  {fallingCount} falling
-                </div>
-              </div>
+              <p className="text-2xl font-bold text-white mt-2 font-mono">{items.length}</p>
+              <p className="text-[10px] text-gray-600 font-mono mt-1">across {new Set(items.map(i => i.weapon_name)).size} weapon types</p>
             </div>
-
-            <div className="glass-panel-hover p-5">
-              <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wider">Avg Opportunity Score</p>
-              <h3 className="text-2xl font-bold text-white mt-2 font-mono tracking-tight">{avgScore}</h3>
-              <div className="w-full bg-carbon-900/80 rounded-full h-1.5 mt-3">
-                <div
-                  className="h-1.5 rounded-full"
-                  style={{
-                    width: `${avgScore}%`,
-                    background: avgScore >= 80
-                      ? 'linear-gradient(90deg, rgba(0, 229, 255, 0.7), rgba(0, 229, 255, 1))'
-                      : 'linear-gradient(90deg, rgba(245, 158, 11, 0.6), rgba(252, 211, 77, 0.9))',
-                    boxShadow: avgScore >= 80
-                      ? '0 0 8px rgba(0, 229, 255, 0.3)'
-                      : '0 0 8px rgba(245, 158, 11, 0.3)',
-                  }}
-                />
+            <div className="glass-panel p-5">
+              <div className="flex items-center gap-2">
+                <p className="text-[11px] text-gray-500 font-medium uppercase tracking-wider">Price Alerts</p>
+                {alertCount > 0 && <Bell className="w-3.5 h-3.5 text-gold-400 animate-pulse" />}
               </div>
+              <p className="text-2xl font-bold text-white mt-2 font-mono">{alertCount}</p>
+              <p className="text-[10px] text-gray-600 font-mono mt-1">
+                {alertCount > 0 ? `${alertCount} skin${alertCount > 1 ? 's' : ''} hit target price!` : 'Set target prices to get alerts'}
+              </p>
             </div>
           </div>
 
-          {/* ═══════════════ TOOLBAR ═══════════════ */}
+          {/* Toolbar */}
           <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
-            {/* Search */}
             <div className="relative w-full sm:w-72">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
               <input
@@ -477,14 +294,12 @@ const Watchlist: React.FC = () => {
                 className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-carbon-800/60 border border-white/[0.06] text-sm text-white placeholder-gray-600 focus:outline-none focus:border-cyan-glow/30 transition-colors font-mono"
               />
             </div>
-
-            {/* Sort buttons */}
             <div className="flex items-center gap-1">
               <ArrowUpDown className="w-3.5 h-3.5 text-gray-500 mr-1" />
               {([
-                { key: 'score' as SortKey, label: 'Score' },
+                { key: 'added' as SortKey, label: 'Recent' },
                 { key: 'price' as SortKey, label: 'Price' },
-                { key: 'change' as SortKey, label: '24h Change' },
+                { key: 'name' as SortKey, label: 'Name' },
               ]).map((opt) => (
                 <button
                   key={opt.key}
@@ -502,45 +317,105 @@ const Watchlist: React.FC = () => {
             </div>
           </div>
 
-          {/* ═══════════════ CARDS GRID ═══════════════ */}
-          {loading && watchlistItems.length === 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {Array.from({ length: 6 }).map((_, i) => (
-                <div key={i} className="glass-panel-hover p-5 h-48">
-                  <div className="h-4 w-32 rounded bg-white/[0.04] animate-pulse mb-3" />
-                  <div className="h-3 w-16 rounded bg-white/[0.04] animate-pulse mb-4" />
-                  <div className="h-7 w-24 rounded bg-white/[0.06] animate-pulse mb-3" />
-                  <div className="h-10 w-full rounded bg-white/[0.03] animate-pulse mb-3" />
-                  <div className="h-3 w-full rounded bg-white/[0.04] animate-pulse" />
+          {/* Skin cards */}
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
+            {filteredItems.map(item => {
+              const rarityColor = RARITY_COLORS[item.rarity] || '#6b7280';
+
+              return (
+                <div key={item.skin_id} className="glass-panel-hover p-5 relative overflow-hidden group">
+                  {/* Rarity accent */}
+                  <div className="absolute top-0 left-0 right-0 h-[2px]" style={{ background: `linear-gradient(90deg, transparent, ${rarityColor}80, transparent)` }} />
+
+                  {/* Hit target indicator */}
+                  {item.hit_target && (
+                    <div className="absolute top-2 right-2 px-2 py-0.5 rounded bg-gold-400/15 border border-gold-400/30">
+                      <span className="text-[9px] font-bold text-gold-400 uppercase tracking-wider">Target Hit!</span>
+                    </div>
+                  )}
+
+                  {/* Header */}
+                  <div className="flex items-start justify-between mb-3">
+                    <Link to={`/skins/${item.skin_id}`} className="flex-1 min-w-0">
+                      <p className="text-sm font-semibold text-white truncate hover:text-cyan-glow/90 transition-colors">
+                        {item.name}
+                      </p>
+                      <div className="flex items-center gap-2 mt-1">
+                        <span className="text-[9px] font-bold uppercase tracking-wider px-1.5 py-0.5 rounded"
+                          style={{ backgroundColor: `${rarityColor}18`, color: rarityColor }}>
+                          {item.rarity}
+                        </span>
+                        <span className="text-[9px] font-mono text-cyan-glow/40">
+                          Float {item.min_float.toFixed(2)}-{item.max_float.toFixed(2)}
+                        </span>
+                      </div>
+                    </Link>
+                    <button
+                      onClick={() => handleRemove(item.skin_id)}
+                      className="p-1.5 rounded-lg text-gray-600 hover:text-red-400 hover:bg-red-500/10 transition-all opacity-0 group-hover:opacity-100"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+
+                  {/* Price */}
+                  <div className="flex items-end justify-between mb-4">
+                    <div>
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Current Price</p>
+                      {item.current_price ? (
+                        <AnimatedNumber value={item.current_price} prefix="$" decimals={2} duration={500}
+                          className="text-xl font-bold font-mono text-white tracking-tight" />
+                      ) : (
+                        <span className="text-xl font-bold font-mono text-gray-600">—</span>
+                      )}
+                    </div>
+                    <div className="text-right">
+                      <p className="text-[10px] text-gray-500 uppercase tracking-wider mb-0.5">Markets</p>
+                      <p className="text-sm font-bold font-mono text-gray-300">{item.market_count}</p>
+                    </div>
+                  </div>
+
+                  {/* Target price */}
+                  <div className="pt-3 border-t border-white/[0.04]">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Target className="w-3.5 h-3.5 text-gray-500" />
+                        <span className="text-[10px] text-gray-500 uppercase tracking-wider">Target Price</span>
+                      </div>
+                      {editingTarget === item.skin_id ? (
+                        <div className="flex items-center gap-1">
+                          <input
+                            type="number"
+                            value={targetInput}
+                            onChange={e => setTargetInput(e.target.value)}
+                            placeholder="0.00"
+                            className="w-20 px-2 py-1 rounded bg-carbon-900/60 border border-white/[0.1] text-[11px] text-white font-mono focus:outline-none focus:border-cyan-glow/30"
+                            autoFocus
+                            onKeyDown={e => { if (e.key === 'Enter') handleSetTarget(item.skin_id); if (e.key === 'Escape') setEditingTarget(null); }}
+                          />
+                          <button onClick={() => handleSetTarget(item.skin_id)} className="text-[10px] text-cyan-glow font-bold">Set</button>
+                        </div>
+                      ) : (
+                        <button
+                          onClick={() => { setEditingTarget(item.skin_id); setTargetInput(item.target_price?.toString() || ''); }}
+                          className="text-sm font-bold font-mono text-gray-400 hover:text-cyan-glow transition-colors"
+                        >
+                          {item.target_price ? `$${item.target_price.toFixed(2)}` : 'Set target'}
+                        </button>
+                      )}
+                    </div>
+                  </div>
                 </div>
-              ))}
-            </div>
-          ) : filteredAndSorted.length > 0 ? (
-            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4">
-              {filteredAndSorted.map((item) => (
-                <WatchlistCard key={item.id} item={item} onRemove={handleRemove} />
-              ))}
-            </div>
-          ) : (
-            <div className="glass-panel p-8 text-center">
-              <Search className="w-8 h-8 text-gray-600 mx-auto mb-3" />
-              <p className="text-sm text-gray-400">No skins match your search.</p>
-              <button
-                onClick={() => setSearchQuery('')}
-                className="mt-3 text-[12px] text-cyan-glow hover:underline"
-              >
-                Clear search
-              </button>
-            </div>
-          )}
+              );
+            })}
+          </div>
 
           {/* Footer */}
           <div className="flex items-center justify-center gap-2 pb-4">
             <TrendingUp className="w-3 h-3 text-gray-600" />
             <span className="text-[10px] text-gray-600 font-mono">
-              Prices sourced from Steam, Buff163, Skinport, CSFloat
+              All prices from real market data — refreshes every 30s
             </span>
-            <div className="neon-dot" style={{ width: 5, height: 5 }} />
           </div>
         </>
       )}

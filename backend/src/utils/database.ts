@@ -6,16 +6,23 @@ let pool: pkg.Pool;
 
 export async function initializeDatabase() {
   try {
-    pool = new Pool({
+    const useSSL = process.env.DB_SSL === 'true' || process.env.DATABASE_URL?.includes('supabase');
+
+    // Use explicit connection params (not DATABASE_URL) to avoid Node 20 SSL issues
+    const poolConfig: any = {
       user: process.env.DB_USER || 'postgres',
       password: process.env.DB_PASSWORD || 'postgres',
       host: process.env.DB_HOST || 'localhost',
       port: parseInt(process.env.DB_PORT || '5432'),
       database: process.env.DB_NAME || 'cs_skin_intelligence',
-      max: 20,
+      max: 10,
       idleTimeoutMillis: 30000,
-      connectionTimeoutMillis: 2000,
-    });
+      connectionTimeoutMillis: 10000,
+    };
+    if (useSSL) {
+      poolConfig.ssl = { rejectUnauthorized: false };
+    }
+    pool = new Pool(poolConfig);
 
     // Test connection
     const result = await pool.query('SELECT NOW()');

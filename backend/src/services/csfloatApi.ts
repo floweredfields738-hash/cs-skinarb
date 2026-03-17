@@ -22,7 +22,7 @@ export async function fetchCSFloatListings(skinName: string): Promise<{
   price: number;
   count: number;
   cheapestListingId: string | null;
-  listings: { price: number; float_value: number; id: string }[];
+  listings: { price: number; float_value: number; id: string; paint_seed?: number | null; stickers?: any[]; inspect_link?: string | null; icon_url?: string | null }[];
 } | null> {
   try {
     const response = await axios.get(`${CSFLOAT_BASE}/listings`, {
@@ -47,8 +47,12 @@ export async function fetchCSFloatListings(skinName: string): Promise<{
 
     const listings = data.data.map((l: any) => ({
       price: (l.price || 0) / 100, // CSFloat returns cents
-      float_value: l.float_value || 0,
+      float_value: l.item?.float_value || l.float_value || 0,
+      paint_seed: l.item?.paint_seed || null,
       id: l.id || '',
+      stickers: l.item?.stickers || [],
+      inspect_link: l.item?.inspect_link || null,
+      icon_url: l.item?.icon_url || null,
     }));
 
     const lowestPrice = listings.length > 0 ? listings[0].price : 0;
@@ -116,18 +120,30 @@ export async function syncCSFloatPrices(batchSize = 100): Promise<{ updated: num
           [skin.id, csfloatMarketId, ext]
         );
 
+        // Get float + paint seed from cheapest listing
+        const cheapest = result.listings[0];
+        const floatVal = cheapest?.float_value || null;
+        const paintSeed = cheapest?.paint_seed || null;
+
         if (existing) {
           await query(
-            `UPDATE market_prices SET price = $1, volume = $2, matched_name = $3, direct_url = $4, last_updated = NOW()
-             WHERE skin_id = $5 AND market_id = $6 AND exterior = $7`,
-            [result.price, result.count, fullName, directUrl, skin.id, csfloatMarketId, ext]
+            `UPDATE market_prices SET price = $1, volume = $2, matched_name = $3, direct_url = $4,
+             float_value = $5, paint_seed = $6, last_updated = NOW()
+             WHERE skin_id = $7 AND market_id = $8 AND exterior = $9`,
+            [result.price, result.count, fullName, directUrl, floatVal, paintSeed, skin.id, csfloatMarketId, ext]
           );
         } else {
           await query(
-            `INSERT INTO market_prices (skin_id, market_id, price, volume, matched_name, direct_url, exterior, last_updated)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())`,
-            [skin.id, csfloatMarketId, result.price, result.count, fullName, directUrl, ext]
+            `INSERT INTO market_prices (skin_id, market_id, price, volume, matched_name, direct_url, exterior, float_value, paint_seed, last_updated)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW())`,
+            [skin.id, csfloatMarketId, result.price, result.count, fullName, directUrl, ext, floatVal, paintSeed]
           );
+        }
+
+        // Save icon_url to skins table if available
+        if (cheapest?.icon_url) {
+          const imageUrl = `https://community.cloudflare.steamstatic.com/economy/image/${cheapest.icon_url}/256fx256f`;
+          await query('UPDATE skins SET image_url = $1 WHERE id = $2 AND image_url IS NULL', [imageUrl, skin.id]);
         }
 
         stats.updated++;

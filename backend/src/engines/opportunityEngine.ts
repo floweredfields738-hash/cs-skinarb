@@ -3,7 +3,7 @@ import { cacheGet, cacheSet } from '../utils/cache';
 import { logger } from '../utils/logging';
 
 /**
- * CS Skin Intelligence - Opportunity Scoring Engine
+ * CSkinArb - Opportunity Scoring Engine
  * 
  * Generates AI opportunity scores 0-100 based on:
  * - Undervaluation (35%): How much cheaper vs historical average
@@ -97,7 +97,20 @@ export async function calculateOpportunityScore(skinId: number): Promise<Opportu
     };
 
     // Cache for 1 hour
-    await cacheSet(cacheKey, result, 3600);
+    await cacheSet(cacheKey, result, 600); // 10 min cache instead of 1 hour
+
+    // Persist to database
+    await queryOne(
+      `INSERT INTO opportunity_scores (skin_id, overall_score, undervaluation_score, volume_trend_score,
+         rarity_weight_score, case_popularity_score, float_rarity_score, recommendation, calculated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+       ON CONFLICT (skin_id) DO UPDATE SET
+         overall_score = $2, undervaluation_score = $3, volume_trend_score = $4,
+         rarity_weight_score = $5, case_popularity_score = $6, float_rarity_score = $7,
+         recommendation = $8, calculated_at = NOW()`,
+      [skinId, result.overallScore, result.undervaluationScore, result.volumeTrendScore,
+       result.rarityWeightScore, result.casePopularityScore, result.floatRarityScore, result.recommendation]
+    );
 
     return result;
   } catch (error) {
@@ -200,7 +213,7 @@ async function getMeticsForSkin(skinId: number): Promise<SkinMetrics | null> {
       volume30d: skin.trading_volume_30d || 0,
       rarity: skin.rarity,
       casePopularity: skin.case_popularity || 50,
-      floatValue: 0.15, // This should come from user-selected items
+      floatValue: skin.min_float ? (parseFloat(skin.min_float) + parseFloat(skin.max_float || '1')) / 2 : 0.15, // midpoint of skin's float range
     };
   } catch (error) {
     logger.error('Error getting skin metrics:', { skinId, error });

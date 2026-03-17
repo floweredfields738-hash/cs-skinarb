@@ -3,12 +3,7 @@ import { Crosshair, TrendingUp, ArrowUpRight, ArrowDownRight } from 'lucide-reac
 import { useLiveSkinsList } from '../../hooks/useRealTimeData';
 import AnimatedNumber from '../common/AnimatedNumber';
 
-const mockPicks = [
-  { name: 'AK-47 | Phantom Disruptor', score: 92, recommendation: 'Strong Buy', price: '$142.50', change: '+18.3%', confidence: 'High' },
-  { name: 'M4A4 | Asiimov', score: 85, recommendation: 'Buy', price: '$89.90', change: '+12.1%', confidence: 'High' },
-  { name: 'AWP | Dragon Lore', score: 78, recommendation: 'Buy', price: '$4,250', change: '+8.7%', confidence: 'Medium' },
-  { name: 'Glock-18 | Fade', score: 74, recommendation: 'Hold', price: '$320.00', change: '+5.2%', confidence: 'Medium' },
-];
+// No mock data — only real API data is shown
 
 function formatPrice(val: number | undefined) {
   if (!val) return '$0.00';
@@ -51,28 +46,35 @@ const AIPicksList: React.FC = () => {
         change: formatChange(s.change_24h),
         changeNum: s.change_24h || 0,
         confidence: getConfidence(score),
+        minFloat: s.min_float ?? 0,
+        maxFloat: s.max_float ?? 1,
         _flash: s._flash,
       };
     });
 
-  const picks = livePicks.length > 0 ? livePicks : mockPicks.map((p) => ({ ...p, changeNum: 0, _flash: false }));
+  const picks = livePicks;
 
   return (
     <div className="glass-panel p-6 h-full">
       <div className="flex items-center justify-between mb-5">
         <div className="flex items-center gap-3">
-          <div className="p-2 rounded-lg bg-gold-400/[0.08]">
-            <Crosshair className="w-4 h-4 text-gold-400" />
+          <div className="p-2 rounded-lg bg-cyan-glow/[0.08] border border-cyan-glow/10">
+            <Crosshair className="w-4 h-4 text-cyan-glow" />
           </div>
           <div>
             <h2 className="text-base font-bold text-white">AI Picks</h2>
             <p className="text-[11px] text-gray-500 font-mono mt-0.5">ML-Powered Analysis</p>
           </div>
         </div>
-        <div className="neon-dot-gold"></div>
+        <div className="neon-dot"></div>
       </div>
 
       <div className="space-y-3">
+        {picks.length === 0 && (
+          <div className="py-8 text-center">
+            <p className="text-gray-500 text-xs font-mono">Analyzing market data...</p>
+          </div>
+        )}
         {picks.map((pick, idx) => {
           const changePositive = typeof pick.changeNum === 'number' ? pick.changeNum >= 0 : !pick.change.startsWith('-');
           return (
@@ -97,6 +99,9 @@ const AIPicksList: React.FC = () => {
                         : <ArrowDownRight className="w-2.5 h-2.5" />
                       }
                       {pick.change}
+                    </span>
+                    <span className="text-[9px] font-mono text-cyan-glow/40">
+                      {Number(pick.minFloat).toFixed(2)}-{Number(pick.maxFloat).toFixed(2)}
                     </span>
                   </div>
                 </div>

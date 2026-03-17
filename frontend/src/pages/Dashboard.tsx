@@ -1,5 +1,5 @@
 import React from 'react';
-import { DollarSign, Zap, Target, BarChart3, Globe } from 'lucide-react';
+import { DollarSign, Zap, BarChart3, Globe } from 'lucide-react';
 import Card from '../components/dashboard/Card';
 import MarketOverview from '../components/dashboard/MarketOverview';
 import AIPicksList from '../components/dashboard/AIPicksList';
@@ -23,7 +23,6 @@ const Dashboard: React.FC = () => {
   const feed = useLivePriceFeed(10);
   const { data: arbData } = useLiveArbitrage();
 
-  const aiPicksCount = Math.max(5, Math.floor(stats.activeSkins * 0.03));
   const indexPoints = useMarketIndex();
   const latestIndex = indexPoints.length > 0 ? indexPoints[indexPoints.length - 1] : null;
   const firstIndex = indexPoints.length > 0 ? indexPoints[0] : null;
@@ -37,7 +36,7 @@ const Dashboard: React.FC = () => {
       {/* Header */}
       <div className="flex items-end justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-white tracking-tight">Dashboard</h1>
+          <h1 className="text-xl md:text-2xl font-bold text-white tracking-tight">Dashboard</h1>
           <p className="text-sm text-gray-500 mt-1">Real-time market analytics and trading intelligence</p>
         </div>
         <div className="flex items-center gap-2">
@@ -49,7 +48,7 @@ const Dashboard: React.FC = () => {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+      <div className="grid grid-cols-3 gap-3 md:gap-4">
         <Card
           title="Market Volume (24h)"
           value={stats.totalVolume24h ? formatVolume(stats.totalVolume24h) : '$0'}
@@ -59,19 +58,13 @@ const Dashboard: React.FC = () => {
         <Card
           title="Active Skins"
           value={stats.activeSkins ? stats.activeSkins.toLocaleString() : '0'}
-          change={formatChange(stats.avgChange24h)}
+          change=""
           icon={<BarChart3 className="w-5 h-5" />}
-        />
-        <Card
-          title="AI Picks"
-          value={String(aiPicksCount)}
-          change={formatChange(stats.avgChange24h)}
-          icon={<Target className="w-5 h-5" />}
         />
         <Card
           title="Arbitrage Found"
           value={String(stats.arbitrageCount || arbData.length)}
-          change={formatChange(stats.avgChange24h)}
+          change=""
           icon={<Zap className="w-5 h-5" />}
         />
       </div>
@@ -80,7 +73,7 @@ const Dashboard: React.FC = () => {
       <div className="glass-panel p-5">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="p-3 rounded-xl bg-gradient-to-br from-cyan-glow/10 to-gold-400/5 border border-cyan-glow/10">
+            <div className="p-3 rounded-xl bg-cyan-glow/[0.08] border border-cyan-glow/10">
               <Globe className="w-5 h-5 text-cyan-glow" />
             </div>
             <div>

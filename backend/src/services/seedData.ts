@@ -9,135 +9,135 @@ const _OLD_SKINS: SkinSeed[] = [
   {
     name: 'AK-47 | Neon Rider', weapon_name: 'AK-47', skin_name: 'Neon Rider',
     rarity: 'Covert', case_name: 'Danger Zone Case', min_float: 0.0, max_float: 0.7,
-    is_knife: false, has_souvenir: false, release_date: '2018-12-06', base_price: 42.50,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2018-12-06', base_price: 42.50,
   },
   {
     name: 'AK-47 | Phantom Disruptor', weapon_name: 'AK-47', skin_name: 'Phantom Disruptor',
     rarity: 'Covert', case_name: 'Fracture Case', min_float: 0.0, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2020-08-06', base_price: 18.75,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2020-08-06', base_price: 18.75,
   },
   {
     name: 'AK-47 | Redline', weapon_name: 'AK-47', skin_name: 'Redline',
     rarity: 'Classified', case_name: 'Phoenix Weapon Case', min_float: 0.1, max_float: 0.7,
-    is_knife: false, has_souvenir: false, release_date: '2014-02-20', base_price: 14.30,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2014-02-20', base_price: 14.30,
   },
   // M4A4 / M4A1-S
   {
     name: 'M4A4 | Asiimov', weapon_name: 'M4A4', skin_name: 'Asiimov',
     rarity: 'Covert', case_name: 'Winter Offensive Weapon Case', min_float: 0.18, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2013-12-18', base_price: 55.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2013-12-18', base_price: 55.00,
   },
   {
     name: 'M4A4 | Neo-Noir', weapon_name: 'M4A4', skin_name: 'Neo-Noir',
     rarity: 'Covert', case_name: 'Prisma Case', min_float: 0.0, max_float: 0.7,
-    is_knife: false, has_souvenir: false, release_date: '2019-03-13', base_price: 12.80,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2019-03-13', base_price: 12.80,
   },
   {
     name: 'M4A1-S | Printstream', weapon_name: 'M4A1-S', skin_name: 'Printstream',
     rarity: 'Covert', case_name: 'Dreams & Nightmares Case', min_float: 0.0, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2022-01-20', base_price: 125.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2022-01-20', base_price: 125.00,
   },
   // AWPs
   {
     name: 'AWP | Dragon Lore', weapon_name: 'AWP', skin_name: 'Dragon Lore',
     rarity: 'Covert', case_name: 'Cobblestone Collection', min_float: 0.0, max_float: 0.7,
-    is_knife: false, has_souvenir: true, release_date: '2014-07-01', base_price: 5200.00,
+    is_knife: false, is_glove: false, has_souvenir: true, release_date: '2014-07-01', base_price: 5200.00,
   },
   {
     name: 'AWP | Fade', weapon_name: 'AWP', skin_name: 'Fade',
     rarity: 'Covert', case_name: 'Anubis Collection', min_float: 0.0, max_float: 0.08,
-    is_knife: false, has_souvenir: false, release_date: '2023-03-22', base_price: 890.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2023-03-22', base_price: 890.00,
   },
   {
     name: 'AWP | Asiimov', weapon_name: 'AWP', skin_name: 'Asiimov',
     rarity: 'Covert', case_name: 'Operation Phoenix Weapon Case', min_float: 0.18, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2014-02-20', base_price: 32.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2014-02-20', base_price: 32.00,
   },
   // Desert Eagle
   {
     name: 'Desert Eagle | Blaze', weapon_name: 'Desert Eagle', skin_name: 'Blaze',
     rarity: 'Restricted', case_name: 'Dust Collection', min_float: 0.0, max_float: 0.08,
-    is_knife: false, has_souvenir: false, release_date: '2013-08-14', base_price: 310.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2013-08-14', base_price: 310.00,
   },
   {
     name: 'Desert Eagle | Code Red', weapon_name: 'Desert Eagle', skin_name: 'Code Red',
     rarity: 'Covert', case_name: 'Prisma 2 Case', min_float: 0.0, max_float: 0.7,
-    is_knife: false, has_souvenir: false, release_date: '2020-04-21', base_price: 38.50,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2020-04-21', base_price: 38.50,
   },
   // USP-S
   {
     name: 'USP-S | Kill Confirmed', weapon_name: 'USP-S', skin_name: 'Kill Confirmed',
     rarity: 'Covert', case_name: 'Shattered Web Case', min_float: 0.0, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2019-11-18', base_price: 48.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2019-11-18', base_price: 48.00,
   },
   {
     name: 'USP-S | Neo-Noir', weapon_name: 'USP-S', skin_name: 'Neo-Noir',
     rarity: 'Classified', case_name: 'Prisma Case', min_float: 0.0, max_float: 0.7,
-    is_knife: false, has_souvenir: false, release_date: '2019-03-13', base_price: 5.20,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2019-03-13', base_price: 5.20,
   },
   // Glock-18
   {
     name: 'Glock-18 | Fade', weapon_name: 'Glock-18', skin_name: 'Fade',
     rarity: 'Restricted', case_name: 'Assault Collection', min_float: 0.0, max_float: 0.08,
-    is_knife: false, has_souvenir: false, release_date: '2013-08-14', base_price: 1450.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2013-08-14', base_price: 1450.00,
   },
   {
     name: 'Glock-18 | Gamma Doppler', weapon_name: 'Glock-18', skin_name: 'Gamma Doppler',
     rarity: 'Covert', case_name: 'Revolution Case', min_float: 0.0, max_float: 0.08,
-    is_knife: false, has_souvenir: false, release_date: '2023-02-09', base_price: 220.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2023-02-09', base_price: 220.00,
   },
   // Knives
   {
     name: 'Karambit | Doppler', weapon_name: 'Karambit', skin_name: 'Doppler',
     rarity: 'Extraordinary', case_name: 'Chroma Case', min_float: 0.0, max_float: 0.08,
-    is_knife: true, has_souvenir: false, release_date: '2015-01-08', base_price: 780.00,
+    is_knife: true, is_glove: false, has_souvenir: false, release_date: '2015-01-08', base_price: 780.00,
   },
   {
     name: 'Butterfly Knife | Fade', weapon_name: 'Butterfly Knife', skin_name: 'Fade',
     rarity: 'Extraordinary', case_name: 'Operation Breakout Weapon Case', min_float: 0.0, max_float: 0.08,
-    is_knife: true, has_souvenir: false, release_date: '2014-07-01', base_price: 1850.00,
+    is_knife: true, is_glove: false, has_souvenir: false, release_date: '2014-07-01', base_price: 1850.00,
   },
   {
     name: 'M9 Bayonet | Crimson Web', weapon_name: 'M9 Bayonet', skin_name: 'Crimson Web',
     rarity: 'Extraordinary', case_name: 'CS:GO Weapon Case', min_float: 0.06, max_float: 0.8,
-    is_knife: true, has_souvenir: false, release_date: '2013-08-14', base_price: 620.00,
+    is_knife: true, is_glove: false, has_souvenir: false, release_date: '2013-08-14', base_price: 620.00,
   },
   // More rifles
   {
     name: 'AK-47 | Vulcan', weapon_name: 'AK-47', skin_name: 'Vulcan',
     rarity: 'Covert', case_name: 'Operation Vanguard Weapon Case', min_float: 0.0, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2014-11-11', base_price: 28.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2014-11-11', base_price: 28.00,
   },
   {
     name: 'AK-47 | The Empress', weapon_name: 'AK-47', skin_name: 'The Empress',
     rarity: 'Covert', case_name: 'Spectrum 2 Case', min_float: 0.0, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2017-09-15', base_price: 22.50,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2017-09-15', base_price: 22.50,
   },
   {
     name: 'M4A1-S | Hyper Beast', weapon_name: 'M4A1-S', skin_name: 'Hyper Beast',
     rarity: 'Covert', case_name: 'Falchion Case', min_float: 0.0, max_float: 1.0,
-    is_knife: false, has_souvenir: false, release_date: '2015-05-26', base_price: 16.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2015-05-26', base_price: 16.00,
   },
   // SMGs and others
   {
     name: 'P2000 | Ocean Foam', weapon_name: 'P2000', skin_name: 'Ocean Foam',
     rarity: 'Classified', case_name: 'CS:GO Weapon Case', min_float: 0.0, max_float: 0.08,
-    is_knife: false, has_souvenir: false, release_date: '2013-08-14', base_price: 185.00,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2013-08-14', base_price: 185.00,
   },
   {
     name: 'Five-SeveN | Monkey Business', weapon_name: 'Five-SeveN', skin_name: 'Monkey Business',
     rarity: 'Classified', case_name: 'Falchion Case', min_float: 0.0, max_float: 0.92,
-    is_knife: false, has_souvenir: false, release_date: '2015-05-26', base_price: 3.80,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2015-05-26', base_price: 3.80,
   },
   {
     name: 'SSG 08 | Dragonfire', weapon_name: 'SSG 08', skin_name: 'Dragonfire',
     rarity: 'Classified', case_name: 'Gamma Case', min_float: 0.0, max_float: 0.7,
-    is_knife: false, has_souvenir: false, release_date: '2016-06-15', base_price: 8.50,
+    is_knife: false, is_glove: false, has_souvenir: false, release_date: '2016-06-15', base_price: 8.50,
   },
   {
     name: 'Bayonet | Tiger Tooth', weapon_name: 'Bayonet', skin_name: 'Tiger Tooth',
     rarity: 'Extraordinary', case_name: 'Chroma 2 Case', min_float: 0.0, max_float: 0.08,
-    is_knife: true, has_souvenir: false, release_date: '2015-04-15', base_price: 350.00,
+    is_knife: true, is_glove: false, has_souvenir: false, release_date: '2015-04-15', base_price: 350.00,
   },
 ];
 

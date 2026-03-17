@@ -31,7 +31,7 @@ async function simulatePriceTick(): Promise<void> {
     const count = 5 + Math.floor(Math.random() * 4);
     const selectedSkins = pickRandom(skins, count);
 
-    for (const skin of selectedSkins) {
+    for (const skin of selectedSkins as any[]) {
       // Pick 1-2 random markets to update
       const marketCount = 1 + Math.floor(Math.random() * 2);
       const allMarketIds = [1, 2, 3, 4];

@@ -20,7 +20,7 @@ const format = winston.format.combine(
   winston.format.timestamp({ format: 'YYYY-MM-DD HH:mm:ss:ms' }),
   winston.format.colorize({ all: true }),
   winston.format.printf(({ timestamp, level, message, ...meta }) => {
-    const ts = timestamp.slice(0, 19).replace('T', ' ');
+    const ts = (timestamp as string).slice(0, 19).replace('T', ' ');
     const metaStr = Object.keys(meta).length ? JSON.stringify(meta, null, 2) : '';
     return `${ts} [${level}]: ${message} ${metaStr}`;
   })

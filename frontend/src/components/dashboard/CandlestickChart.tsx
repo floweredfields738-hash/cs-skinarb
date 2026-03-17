@@ -22,6 +22,8 @@ interface CandlestickChartProps {
   showIntervalSelector?: boolean;
   showVolume?: boolean;
   className?: string;
+  /** When true, fetches market index candles instead of per-skin candles */
+  indexMode?: boolean;
 }
 
 // ── Constants ────────────────────────────────────────────────────────────────
@@ -54,33 +56,20 @@ const COLORS = {
 const PADDING = { top: 16, right: 64, bottom: 40, left: 12 };
 const VOLUME_HEIGHT_RATIO = 0.18;
 
-// ── Helper to generate mock candles on frontend when API has no data ─────────
+// ── Market overlay colors ────────────────────────────────────────────────────
 
-function generateMockCandles(count: number, basePrice: number): Candle[] {
-  const candles: Candle[] = [];
-  let price = basePrice * (0.85 + Math.random() * 0.15);
-  const now = Date.now();
-  const interval = 3600000; // 1h
+const MARKET_LINE_COLORS: Record<number, { color: string; name: string }> = {
+  1: { color: '#4a90d9', name: 'Steam' },
+  2: { color: '#f5a623', name: 'Buff163' },
+  3: { color: '#9b59b6', name: 'Skinport' },
+  4: { color: '#2ecc71', name: 'CSFloat' },
+};
 
-  for (let i = count; i > 0; i--) {
-    const open = price;
-    const change = (Math.random() - 0.48) * price * 0.03;
-    const close = Math.max(0.01, price + change);
-    const range = Math.abs(close - open);
-    const high = Math.max(open, close) + Math.random() * range * 1.5;
-    const low = Math.max(0.01, Math.min(open, close) - Math.random() * range * 1.5);
-    const vol = Math.floor(20 + Math.random() * 200);
-    candles.push({
-      timestamp: new Date(now - i * interval).toISOString(),
-      open: Math.round(open * 100) / 100,
-      high: Math.round(high * 100) / 100,
-      low: Math.round(low * 100) / 100,
-      close: Math.round(close * 100) / 100,
-      volume: vol,
-    });
-    price = close;
-  }
-  return candles;
+interface MarketOverlay {
+  marketId: number;
+  name: string;
+  color: string;
+  candles: Candle[];
 }
 
 // ── Format helpers ───────────────────────────────────────────────────────────
@@ -120,12 +109,15 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
   showIntervalSelector = true,
   showVolume = true,
   className = '',
+  indexMode = false,
 }) => {
   const [interval, setInterval_] = useState(initialInterval);
   const [candles, setCandles] = useState<Candle[]>([]);
+  const [overlays, setOverlays] = useState<MarketOverlay[]>([]);
   const [loading, setLoading] = useState(true);
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null);
+  const [showOverlays, setShowOverlays] = useState(true);
   const svgRef = useRef<SVGSVGElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [dimensions, setDimensions] = useState({ width: 800, height: height || 420 });
@@ -154,24 +146,54 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
 
   // Fetch candle data
   useEffect(() => {
-    if (!skinId) return;
     setLoading(true);
 
-    marketApi.getCandles({ skin_id: skinId, market_id: marketId, interval, limit: 100 })
+    if (indexMode) {
+      // Fetch market index candles (aggregate across all markets)
+      const apiUrl = '/api';
+      fetch(`${apiUrl}/market/index-candles?interval=${interval}&limit=200`)
+        .then(r => r.json())
+        .then(data => {
+          const candles = data?.data?.candles || [];
+          setCandles(candles.length >= 2 ? candles : []);
+          setOverlays([]);
+        })
+        .catch(() => setCandles([]))
+        .finally(() => setLoading(false));
+      return;
+    }
+
+    if (!skinId) { setLoading(false); return; }
+
+    // Fetch primary market candles
+    const primaryFetch = marketApi.getCandles({ skin_id: skinId, market_id: marketId, interval, limit: 100 })
       .then((res) => {
         const data = res.data?.data?.candles || res.data?.candles || [];
-        if (data.length >= 5) {
-          setCandles(data);
-        } else {
-          // Fallback to mock data
-          setCandles(generateMockCandles(100, 100));
-        }
+        setCandles(data.length >= 2 ? data : []);
       })
-      .catch(() => {
-        setCandles(generateMockCandles(100, 100));
+      .catch(() => setCandles([]));
+
+    // Fetch overlay candles for other markets
+    const otherMarkets = [1, 3, 4].filter(id => id !== marketId);
+    const overlayFetches = otherMarkets.map(mId =>
+      marketApi.getCandles({ skin_id: skinId, market_id: mId, interval, limit: 100 })
+        .then((res) => {
+          const data = res.data?.data?.candles || res.data?.candles || [];
+          if (data.length >= 2) {
+            const info = MARKET_LINE_COLORS[mId] || { color: '#888', name: `Market ${mId}` };
+            return { marketId: mId, name: info.name, color: info.color, candles: data } as MarketOverlay;
+          }
+          return null;
+        })
+        .catch(() => null)
+    );
+
+    Promise.all([primaryFetch, ...overlayFetches])
+      .then(([_, ...results]) => {
+        setOverlays(results.filter(Boolean) as MarketOverlay[]);
       })
       .finally(() => setLoading(false));
-  }, [skinId, marketId, interval]);
+  }, [skinId, marketId, interval, indexMode]);
 
   // ── Derived chart calculations ─────────────────────────────────────────────
 
@@ -242,8 +264,11 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
     if (!svg || candles.length === 0) return;
 
     const rect = svg.getBoundingClientRect();
-    const mouseX = e.clientX - rect.left;
-    const mouseY = e.clientY - rect.top;
+    // Scale mouse position from pixel space to viewBox coordinate space
+    const scaleX = dimensions.width / rect.width;
+    const scaleY = dimensions.height / rect.height;
+    const mouseX = (e.clientX - rect.left) * scaleX;
+    const mouseY = (e.clientY - rect.top) * scaleY;
 
     // Find closest candle
     let closest = 0;
@@ -264,7 +289,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
       setHoveredIdx(null);
       setMousePos(null);
     }
-  }, [candles, idxToX, candleWidth]);
+  }, [candles, idxToX, candleWidth, dimensions]);
 
   const handleMouseLeave = useCallback(() => {
     setHoveredIdx(null);
@@ -315,12 +340,22 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
 
   if (loading) {
     return (
-      <div className={`glass-panel p-6 ${className}`}>
-        <div className="flex items-center justify-center" style={{ height }}>
-          <div className="flex flex-col items-center gap-3">
-            <div className="w-8 h-8 border-2 border-cyan-glow/30 border-t-cyan-glow rounded-full animate-spin" />
-            <span className="text-[11px] text-gray-500 font-mono">Loading chart data...</span>
-          </div>
+      <div className={`glass-panel p-6 flex items-center justify-center h-full min-h-[400px] ${className}`}>
+        <div className="flex flex-col items-center gap-3">
+          <div className="w-8 h-8 border-2 border-cyan-glow/30 border-t-cyan-glow rounded-full animate-spin" />
+          <span className="text-[11px] text-gray-500 font-mono">Loading chart data...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (!loading && candles.length === 0) {
+    return (
+      <div className={`glass-panel p-6 flex items-center justify-center h-full min-h-[200px] ${className}`}>
+        <div className="flex flex-col items-center gap-3 text-center">
+          <Activity className="w-6 h-6 text-cyan-glow/20" />
+          <p className="text-[12px] text-gray-500">No candlestick data yet for this skin</p>
+          <p className="text-[10px] text-gray-600 font-mono">Price history is being recorded — chart will appear within an hour</p>
         </div>
       </div>
     );
@@ -375,6 +410,37 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
               ))}
             </div>
           )}
+
+          {/* Market overlay legend */}
+          {overlays.length > 0 && (
+            <div className="flex items-center gap-3">
+              <button
+                onClick={() => setShowOverlays(!showOverlays)}
+                className={`px-2.5 py-1.5 rounded-lg text-[10px] font-bold font-mono transition-all ${
+                  showOverlays
+                    ? 'bg-white/[0.06] text-gray-300 border border-white/[0.1]'
+                    : 'text-gray-600 hover:text-gray-400'
+                }`}
+              >
+                {showOverlays ? 'Markets' : 'Show Markets'}
+              </button>
+              {showOverlays && (
+                <div className="flex items-center gap-2">
+                  {/* Primary market */}
+                  <span className="flex items-center gap-1">
+                    <span className="w-3 h-2 rounded-sm" style={{ backgroundColor: MARKET_LINE_COLORS[marketId]?.color || '#888' }} />
+                    <span className="text-[9px] font-mono text-gray-400">{MARKET_LINE_COLORS[marketId]?.name || 'Primary'}</span>
+                  </span>
+                  {overlays.map(o => (
+                    <span key={o.marketId} className="flex items-center gap-1">
+                      <span className="w-3 h-0.5 rounded-full" style={{ backgroundColor: o.color }} />
+                      <span className="text-[9px] font-mono text-gray-500">{o.name}</span>
+                    </span>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 
@@ -387,6 +453,7 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
           viewBox={`0 0 ${dimensions.width} ${dimensions.height}`}
           preserveAspectRatio="none"
           className="select-none w-full h-full"
+          style={{ cursor: hoveredIdx !== null ? 'crosshair' : 'default' }}
           onMouseMove={handleMouseMove}
           onMouseLeave={handleMouseLeave}
         >
@@ -494,6 +561,70 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             );
           })}
 
+          {/* Cross-market overlay lines */}
+          {showOverlays && overlays.map((overlay) => {
+            // Map overlay candle timestamps to our primary candle x positions
+            const overlayMap = new Map<string, number>();
+            overlay.candles.forEach(c => {
+              const ts = new Date(c.timestamp).getTime();
+              overlayMap.set(String(ts), c.close);
+            });
+
+            // Build path points by matching timestamps
+            const points: { x: number; y: number }[] = [];
+            candles.forEach((primaryCandle, i) => {
+              const ts = new Date(primaryCandle.timestamp).getTime();
+              // Find closest overlay candle within 1 interval
+              let bestPrice: number | null = null;
+              let bestDist = Infinity;
+              for (const oc of overlay.candles) {
+                const ots = new Date(oc.timestamp).getTime();
+                const dist = Math.abs(ots - ts);
+                if (dist < bestDist) {
+                  bestDist = dist;
+                  bestPrice = oc.close;
+                }
+              }
+              if (bestPrice !== null && bestDist < 86400000) { // Within 24h
+                const x = idxToX(i);
+                const y = priceToY(bestPrice);
+                points.push({ x, y });
+              }
+            });
+
+            if (points.length < 2) return null;
+
+            const pathD = points.map((p, i) => `${i === 0 ? 'M' : 'L'} ${p.x} ${p.y}`).join(' ');
+
+            return (
+              <g key={`overlay-${overlay.marketId}`}>
+                <path
+                  d={pathD}
+                  fill="none"
+                  stroke={overlay.color}
+                  strokeWidth={1.5}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  opacity={0.7}
+                />
+                {/* End label */}
+                {points.length > 0 && (
+                  <text
+                    x={points[points.length - 1].x + 6}
+                    y={points[points.length - 1].y + 3}
+                    fill={overlay.color}
+                    fontSize={9}
+                    fontFamily="JetBrains Mono, monospace"
+                    fontWeight={600}
+                    opacity={0.8}
+                  >
+                    {overlay.name}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
           {/* Volume bars */}
           {showVolume && candles.map((candle, i) => {
             const cx = idxToX(i);
@@ -514,10 +645,10 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
             );
           })}
 
-          {/* Crosshair on hover */}
+          {/* Crosshair on hover — follows cursor exactly */}
           {hoveredIdx !== null && mousePos && (
             <>
-              {/* Vertical line */}
+              {/* Vertical line snapped to nearest candle */}
               <line
                 x1={idxToX(hoveredIdx)}
                 y1={chartArea.y}
@@ -526,33 +657,65 @@ const CandlestickChart: React.FC<CandlestickChartProps> = ({
                 stroke={COLORS.cyan}
                 strokeWidth={0.5}
                 strokeDasharray="3,3"
-                opacity={0.4}
+                opacity={0.5}
               />
-              {/* Horizontal line at close price */}
-              {tooltipCandle && (
-                <line
-                  x1={chartArea.x}
-                  y1={priceToY(tooltipCandle.close)}
-                  x2={chartArea.x + chartArea.width}
-                  y2={priceToY(tooltipCandle.close)}
-                  stroke={COLORS.cyan}
-                  strokeWidth={0.5}
-                  strokeDasharray="3,3"
-                  opacity={0.4}
-                />
+              {/* Horizontal line follows cursor Y exactly */}
+              <line
+                x1={chartArea.x}
+                y1={mousePos.y}
+                x2={chartArea.x + chartArea.width}
+                y2={mousePos.y}
+                stroke={COLORS.cyan}
+                strokeWidth={0.5}
+                strokeDasharray="3,3"
+                opacity={0.5}
+              />
+              {/* Price label on right axis at cursor Y */}
+              {mousePos.y >= chartArea.y && mousePos.y <= chartArea.y + chartArea.height && (
+                <>
+                  <rect
+                    x={chartArea.x + chartArea.width + 2}
+                    y={mousePos.y - 9}
+                    width={PADDING.right - 6}
+                    height={18}
+                    rx={4}
+                    fill={COLORS.cyan}
+                    opacity={0.9}
+                  />
+                  <text
+                    x={chartArea.x + chartArea.width + PADDING.right / 2}
+                    y={mousePos.y + 4}
+                    textAnchor="middle"
+                    fill="#000"
+                    fontSize={10}
+                    fontFamily="JetBrains Mono, monospace"
+                    fontWeight={700}
+                  >
+                    {formatPrice(priceMin + (priceMax - priceMin) * (1 - (mousePos.y - chartArea.y) / chartArea.height))}
+                  </text>
+                </>
               )}
             </>
           )}
         </svg>
 
-        {/* Tooltip overlay (positioned with CSS for better rendering) */}
-        {tooltipCandle && mousePos && (
+        {/* Tooltip overlay — snaps to candle, flips side to never block view */}
+        {tooltipCandle && hoveredIdx !== null && (
           <div
-            className="absolute pointer-events-none z-50"
-            style={{
-              left: Math.min(mousePos.x + 12, dimensions.width - 200),
-              top: Math.max(mousePos.y - 100, 8),
-            }}
+            className="absolute pointer-events-none z-50 transition-all duration-75"
+            style={(() => {
+              const candleX = idxToX(hoveredIdx);
+              const tooltipWidth = 180;
+              const tooltipHeight = 180;
+              // Flip to left side if candle is in right half of chart
+              const showLeft = candleX > dimensions.width / 2;
+              const left = showLeft
+                ? candleX - tooltipWidth - 16
+                : candleX + 16;
+              // Keep tooltip vertically within bounds
+              const top = Math.max(8, Math.min(mousePos?.y ? mousePos.y - tooltipHeight / 2 : 60, dimensions.height - tooltipHeight - 8));
+              return { left: Math.max(4, left), top };
+            })()}
           >
             <div
               className="rounded-xl p-3 backdrop-blur-xl border shadow-2xl"

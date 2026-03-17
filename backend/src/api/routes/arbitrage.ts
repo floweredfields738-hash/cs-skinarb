@@ -44,18 +44,27 @@ router.get(
       params.push(limit);
 
       const result = await query(
-        `SELECT ao.id, ao.skin_id, s.name, NULL as image_url,
+        `SELECT ao.id, ao.skin_id, s.name, s.image_url,
                 sm.display_name as source_market, tm.display_name as target_market,
                 ao.buy_price, ao.sell_price, ao.net_profit, ao.profit_margin, ao.roi,
                 ao.buy_link, ao.sell_link, ao.exterior,
-                ao.liquidity_score, ao.risk_level, ao.expires_at,
-                ao.created_at
+                ao.confidence, ao.risk_level, ao.expires_at,
+                ao.created_at,
+                s.min_float, s.max_float, s.rarity, s.weapon_name,
+                (SELECT mp.float_value FROM market_prices mp
+                 WHERE mp.skin_id = ao.skin_id AND mp.market_id = ao.source_market_id
+                 AND mp.exterior = ao.exterior AND mp.float_value IS NOT NULL
+                 LIMIT 1) as exact_float,
+                (SELECT mp.paint_seed FROM market_prices mp
+                 WHERE mp.skin_id = ao.skin_id AND mp.market_id = ao.source_market_id
+                 AND mp.exterior = ao.exterior AND mp.paint_seed IS NOT NULL
+                 LIMIT 1) as paint_seed
          FROM arbitrage_opportunities ao
          JOIN skins s ON ao.skin_id = s.id
          JOIN markets sm ON sm.id = ao.source_market_id
          JOIN markets tm ON tm.id = ao.target_market_id
          ${whereClause}
-         ORDER BY ao.roi DESC, ao.net_profit DESC
+         ORDER BY ao.net_profit DESC, ao.roi DESC
          LIMIT $${paramCount}`,
         params
       );
@@ -170,6 +179,42 @@ router.get(
 );
 
 // Get arbitrage details for specific opportunity
+// Historical arbitrage data — frequency, lifespan, patterns (must be before /:id)
+router.get('/history', optionalAuthMiddleware, async (req: Request, res: Response, next: NextFunction) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit as string) || 20, 100);
+
+    const frequent = await query(
+      `SELECT s.name, ah.exterior,
+              sm.display_name as buy_market, tm.display_name as sell_market,
+              COUNT(*) as occurrences,
+              ROUND(AVG(ah.net_profit)::numeric, 2) as avg_profit,
+              ROUND(AVG(ah.roi)::numeric, 1) as avg_roi,
+              MIN(ah.detected_at) as first_seen,
+              MAX(ah.detected_at) as last_seen
+       FROM arbitrage_history ah
+       JOIN skins s ON s.id = ah.skin_id
+       JOIN markets sm ON sm.id = ah.source_market_id
+       JOIN markets tm ON tm.id = ah.target_market_id
+       GROUP BY s.name, ah.exterior, sm.display_name, tm.display_name
+       ORDER BY COUNT(*) DESC
+       LIMIT $1`,
+      [limit]
+    );
+
+    const stats = await query(
+      `SELECT COUNT(*) as total_recorded,
+              COUNT(DISTINCT skin_id) as unique_skins,
+              ROUND(AVG(net_profit)::numeric, 2) as avg_profit,
+              ROUND(AVG(roi)::numeric, 1) as avg_roi,
+              MIN(detected_at) as tracking_since
+       FROM arbitrage_history`
+    );
+
+    res.json({ success: true, frequent: frequent.rows, stats: stats.rows[0] });
+  } catch (error) { next(error); }
+});
+
 router.get(
   '/:id',
   optionalAuthMiddleware,

@@ -24,8 +24,9 @@ const AuthCallback: React.FC = () => {
       dispatch(setToken(token));
       localStorage.setItem('authToken', token);
 
-      // Fetch user details
-      fetch('/api/auth/me', {
+      // Fetch user details from backend
+      const apiUrl = '/api';
+      fetch(`${apiUrl}/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       })
         .then(res => res.json())
