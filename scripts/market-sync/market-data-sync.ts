@@ -3,11 +3,20 @@ import { Pool } from 'pg';
 import { createClient } from 'redis';
 
 const db = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost/cs-skin-platform'
+  connectionString: process.env.DATABASE_URL,
 });
 
+const redisUrl = process.env.REDIS_URL;
+const redisHost = process.env.REDIS_HOST || 'localhost';
+const redisPort = process.env.REDIS_PORT || '6379';
+const redisPassword = process.env.REDIS_PASSWORD;
+
 const redis = createClient({
-  url: `redis://${process.env.REDIS_HOST || 'localhost'}:${process.env.REDIS_PORT || '6379'}`
+  url: redisUrl
+    ? redisUrl
+    : (redisPassword
+        ? `rediss://default:${redisPassword}@${redisHost}:${redisPort}`
+        : `redis://${redisHost}:${redisPort}`),
 });
 
 // Market configurations
@@ -365,7 +374,7 @@ async function cleanupOldData(): Promise<void> {
  */
 async function invalidateMarketCache(): Promise<void> {
   try {
-    await redis.connect().catch(() => {}); // connect if not already
+    if (!redis.isOpen) await redis.connect();
     const keys = await redis.keys('market:*');
 
     for (const key of keys) {

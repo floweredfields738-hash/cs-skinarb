@@ -1,0 +1,29 @@
+{
+  "name": "cs-skin-intelligence-platform",
+  "version": "1.0.0",
+  "description": "A professional-grade Bloomberg Terminal clone for Counter-Strike: Global Offensive skin trading. Built with React, TypeScript, Node.js, PostgreSQL, and advanced AI engines for real-time market analytics.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/floweredfields738-hash/cs-skinarb.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/floweredfields738-hash/cs-skinarb/issues"
+  },
+  "homepage": "https://github.com/floweredfields738-hash/cs-skinarb#readme",
+  "devDependencies": {
+    "@types/node": "^25.5.0",
+    "@types/pg": "^8.18.0",
+    "typescript": "^5.9.3"
+  }
+}

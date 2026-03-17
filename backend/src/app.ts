@@ -19,6 +19,7 @@ import publicApiRoutes from './api/routes/publicApi';
 import billingRoutes from './api/routes/billing';
 import storageRoutes from './api/routes/storage';
 import sponsoredRoutes from './api/routes/sponsored';
+import aiPicksRoutes from './api/routes/aiPicks';
 import { errorHandler } from './middleware/errorHandler';
 import { requestLogger } from './middleware/logging';
 import { authMiddleware } from './middleware/auth';
@@ -92,6 +93,7 @@ export function createApp(): Express {
   app.use('/api/market', publicCache(30), marketRoutes);      // Cache 30s
   app.use('/api/arbitrage', publicCache(30), arbitrageRoutes); // Cache 30s
   app.use('/api/sponsored', publicCache(300), sponsoredRoutes); // Cache 5min
+  app.use('/api/ai-picks', publicCache(30), aiPicksRoutes);     // Cache 30s
 
   // Protected Routes (auth required)
   app.use('/api/portfolio', authMiddleware, portfolioRoutes);

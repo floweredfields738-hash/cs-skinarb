@@ -28,6 +28,12 @@ export async function initializeDatabase() {
     const result = await pool.query('SELECT NOW()');
     logger.info('✓ Database connection successful');
 
+    // Fix auto-increment sequences that may be out of sync
+    await pool.query(`
+      SELECT setval(pg_get_serial_sequence('market_prices', 'id'),
+        COALESCE((SELECT MAX(id) FROM market_prices), 0) + 1, false)
+    `).catch(err => logger.warn('Could not reset market_prices sequence:', err.message));
+
     return pool;
   } catch (error) {
     logger.error('❌ Failed to initialize database:', error);

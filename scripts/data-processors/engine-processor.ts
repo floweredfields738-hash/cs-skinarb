@@ -1,16 +1,10 @@
 import { Pool } from 'pg';
-import { createClient } from 'redis';
 import { calculateOpportunityScore, recalculateAllScores } from '../../backend/src/engines/opportunityEngine';
 import { detectArbitrageOpportunities } from '../../backend/src/engines/arbitrageEngine';
 import { predictAllPrices } from '../../backend/src/engines/predictionEngine';
 
 const db = new Pool({
-  connectionString: process.env.DATABASE_URL || 'postgresql://localhost/cs-skin-platform'
-});
-
-const redis = createClient({
-  host: process.env.REDIS_HOST || 'localhost',
-  port: parseInt(process.env.REDIS_PORT || '6379')
+  connectionString: process.env.DATABASE_URL,
 });
 
 /**
@@ -29,7 +23,7 @@ export async function processOpportunityScores(): Promise<void> {
        LIMIT 1000`
     );
 
-    const skinIds = result.rows.map(r => r.id);
+    const skinIds = result.rows.map((r: any) => r.id);
     console.log(`[OPPORTUNITY] Processing ${skinIds.length} skins`);
 
     let processed = 0;
@@ -170,7 +164,6 @@ export function startDataProcessingScheduler(): void {
 process.on('SIGTERM', async () => {
   console.log('\nShutting down data processor...');
   await db.end();
-  redis.quit();
   process.exit(0);
 });
 

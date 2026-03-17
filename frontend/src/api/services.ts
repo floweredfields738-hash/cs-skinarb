@@ -54,6 +54,11 @@ export const arbitrageApi = {
     client.post(`/arbitrage/${id}/simulate`),
 };
 
+// ─── AI Picks ─────────────────────────────────────────
+export const aiPicksApi = {
+  get: () => client.get('/ai-picks'),
+};
+
 // ─── Portfolio ───────────────────────────────────────
 export const portfolioApi = {
   get: () =>
