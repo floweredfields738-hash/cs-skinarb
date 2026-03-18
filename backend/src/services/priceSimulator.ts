@@ -56,10 +56,11 @@ async function simulatePriceTick(): Promise<void> {
         const actualChange = Math.round((newPrice - oldPrice) * 100) / 100;
         const actualChangePercent = Math.round((actualChange / oldPrice) * 100 * 100) / 100;
 
-        // Small random volume adjustment
+        // Small random volume adjustment — seed with realistic volume if currently 0
         const oldVolume = current.volume || 0;
+        const baseVolume = oldVolume > 0 ? oldVolume : Math.floor(randomInRange(50, 500));
         const volumeChange = Math.floor(randomInRange(-5, 15));
-        const newVolume = Math.max(0, oldVolume + volumeChange);
+        const newVolume = Math.max(1, baseVolume + volumeChange);
 
         // Update market_prices
         await query(

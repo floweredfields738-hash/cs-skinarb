@@ -259,42 +259,69 @@ router.get('/summary', optionalAuthMiddleware, async (req: Request, res: Respons
     let summary = await cacheGet(cacheKey);
 
     if (!summary) {
-      const [generalStats, volumeStats, opportunityStats] = await Promise.all([
+      const [volumeResult, skinsResult, changeResult, gainers, losers, arbResult] = await Promise.all([
+        query(`SELECT COALESCE(SUM(volume), 0) as total_volume FROM market_prices`, []),
+        query(`SELECT COUNT(DISTINCT skin_id) as count FROM market_prices`, []),
         query(
-          `SELECT COUNT(*) as active_skins,
-                  ROUND(AVG(ps.avg_price_7d)::numeric, 2) as market_avg_price,
-                  ROUND(SUM(ps.trading_volume_7d)::numeric, 0) as total_volume
+          `SELECT
+             COALESCE(AVG(
+               CASE WHEN ph2.price > 0 THEN ((ph1.price - ph2.price) / ph2.price) * 100 ELSE 0 END
+             ), 0) as avg_change
+           FROM (
+             SELECT skin_id, price, ROW_NUMBER() OVER (PARTITION BY skin_id ORDER BY timestamp DESC) as rn
+             FROM price_history WHERE timestamp > NOW() - INTERVAL '24 hours'
+           ) ph1
+           JOIN (
+             SELECT skin_id, price, ROW_NUMBER() OVER (PARTITION BY skin_id ORDER BY timestamp ASC) as rn
+             FROM price_history WHERE timestamp > NOW() - INTERVAL '24 hours'
+           ) ph2 ON ph1.skin_id = ph2.skin_id AND ph1.rn = 1 AND ph2.rn = 1`,
+          []
+        ),
+        query(
+          `SELECT s.name,
+             COALESCE(((mp_latest.price - ps.avg_price_7d) / NULLIF(ps.avg_price_7d, 0)) * 100, 0) as change_pct
            FROM skins s
-           LEFT JOIN price_statistics ps ON ps.skin_id = s.id
-           WHERE ps.trading_volume_7d > 0`,
+           JOIN price_statistics ps ON ps.skin_id = s.id
+           JOIN (
+             SELECT DISTINCT ON (skin_id) skin_id, price
+             FROM market_prices ORDER BY skin_id, last_updated DESC
+           ) mp_latest ON mp_latest.skin_id = s.id
+           ORDER BY change_pct DESC LIMIT 1`,
           []
         ),
         query(
-          `SELECT market_id, COUNT(*) as update_count,
-                  ROUND(AVG(price)::numeric, 2) as avg_price
-           FROM market_prices
-           WHERE last_updated >= NOW() - INTERVAL '1 hour'
-           GROUP BY market_id`,
-          []
-        ),
-        query(
-          `SELECT COUNT(*) as strong_buys,
-                  ROUND(AVG(os.overall_score)::numeric, 2) as avg_score
+          `SELECT s.name,
+             COALESCE(((mp_latest.price - ps.avg_price_7d) / NULLIF(ps.avg_price_7d, 0)) * 100, 0) as change_pct
            FROM skins s
-           LEFT JOIN opportunity_scores os ON os.skin_id = s.id
-           WHERE os.overall_score >= 75`,
+           JOIN price_statistics ps ON ps.skin_id = s.id
+           JOIN (
+             SELECT DISTINCT ON (skin_id) skin_id, price
+             FROM market_prices ORDER BY skin_id, last_updated DESC
+           ) mp_latest ON mp_latest.skin_id = s.id
+           ORDER BY change_pct ASC LIMIT 1`,
           []
         ),
+        query(`SELECT COUNT(*) as count FROM arbitrage_opportunities WHERE is_active = TRUE`, []),
       ]);
 
+      const topGainer = gainers.rows.length > 0
+        ? { name: gainers.rows[0].name, change: Math.round(parseFloat(gainers.rows[0].change_pct) * 100) / 100 }
+        : { name: 'N/A', change: 0 };
+      const topLoser = losers.rows.length > 0
+        ? { name: losers.rows[0].name, change: Math.round(parseFloat(losers.rows[0].change_pct) * 100) / 100 }
+        : { name: 'N/A', change: 0 };
+
       summary = {
-        general: generalStats.rows[0],
-        markets: volumeStats.rows,
-        opportunities: opportunityStats.rows[0],
-        lastUpdated: new Date(),
+        totalVolume24h: parseInt(volumeResult.rows[0]?.total_volume || '0'),
+        activeSkins: parseInt(skinsResult.rows[0]?.count || '0'),
+        avgChange24h: Math.round(parseFloat(changeResult.rows[0]?.avg_change || '0') * 100) / 100,
+        topGainer,
+        topLoser,
+        arbitrageCount: parseInt(arbResult.rows[0]?.count || '0'),
+        timestamp: new Date().toISOString(),
       };
 
-      await cacheSet(cacheKey, summary, 600); // Cache for 10 minutes
+      await cacheSet(cacheKey, summary, 30); // Cache for 30s to stay fresh
     }
 
     res.json({
