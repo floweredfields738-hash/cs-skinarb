@@ -1,4 +1,4 @@
-import React, { useRef, useEffect, useState } from 'react';
+import React, { useRef, useEffect, useState, useMemo } from 'react';
 import ReactDOM from 'react-dom';
 import { TrendingUp, TrendingDown, ExternalLink, X } from 'lucide-react';
 import { useLivePriceFeed } from '../../hooks/useRealTimeData';
@@ -17,7 +17,12 @@ const LiveTicker: React.FC = () => {
   const [items, setItems] = useState<TickerItem[]>([]);
   const [popup, setPopup] = useState<{ item: TickerItem; x: number; y: number } | null>(null);
   const initialized = useRef(false);
+  const marqueeRef = useRef<HTMLDivElement>(null);
+  const pausedRef = useRef(false);
+  const animApplied = useRef(false);
 
+  // Only set items ONCE on initial load — never re-render the ticker after that
+  // This prevents the CSS animation from restarting and causing stutter
   useEffect(() => {
     if (!initialized.current && feed.length >= 10) {
       setItems([...feed]);
@@ -25,13 +30,31 @@ const LiveTicker: React.FC = () => {
     }
   }, [feed]);
 
+  // CSS animation — apply ONCE, never recalculate, runs on GPU compositor thread
   useEffect(() => {
-    if (!initialized.current) return;
-    const interval = setInterval(() => {
-      if (feed.length >= 10) setItems([...feed]);
-    }, 60000);
-    return () => clearInterval(interval);
-  }, [feed]);
+    if (animApplied.current) return; // Never re-apply
+    const el = marqueeRef.current;
+    if (!el || items.length === 0) return;
+
+    // Wait for layout
+    requestAnimationFrame(() => {
+      const halfWidth = el.scrollWidth / 2;
+      if (halfWidth <= 0) return;
+
+      const speed = 90; // pixels per second
+      const duration = halfWidth / speed;
+      el.style.animation = `tickerSlide ${duration}s linear infinite`;
+      animApplied.current = true;
+    });
+  }, [items]);
+
+  // Pause/resume via ref (no re-render, no animation restart)
+  useEffect(() => {
+    pausedRef.current = !!popup;
+    if (marqueeRef.current) {
+      marqueeRef.current.style.animationPlayState = popup ? 'paused' : 'running';
+    }
+  }, [popup]);
 
   // Close popup on outside click
   useEffect(() => {
@@ -51,6 +74,9 @@ const LiveTicker: React.FC = () => {
     });
   };
 
+  // Memoize so the ticker DOM never re-renders (prevents animation restart)
+  const displayItems = useMemo(() => [...items, ...items], [items]);
+
   if (items.length < 3) {
     return (
       <div className="flex items-center gap-2 text-xs font-mono">
@@ -60,8 +86,6 @@ const LiveTicker: React.FC = () => {
     );
   }
 
-  const displayItems = [...items, ...items];
-
   const generateSearchUrl = (name: string) => {
     const baseName = name.replace(/\s*\([^)]*\)$/, '').trim();
     return `https://steamcommunity.com/market/search?appid=730&q=${encodeURIComponent(baseName)}`;
@@ -70,7 +94,7 @@ const LiveTicker: React.FC = () => {
   return (
     <>
       <div className="ticker-marquee-container">
-        <div className="ticker-marquee" style={popup ? { animationPlayState: 'paused' } : undefined}>
+        <div className="ticker-marquee" ref={marqueeRef}>
           {displayItems.map((item, idx) => (
             <div
               key={`${item.skinName}-${idx}`}

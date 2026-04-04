@@ -23,7 +23,15 @@ router.get('/prices', optionalAuthMiddleware, async (req: Request, res: Response
          FROM market_prices mp
          JOIN skins s ON mp.skin_id = s.id
          JOIN markets m ON mp.market_id = m.id
-         WHERE mp.price > 0 AND mp.last_updated >= NOW() - INTERVAL '2 hours'
+         WHERE mp.price > 5
+           AND mp.last_updated >= NOW() - INTERVAL '2 hours'
+           AND s.name NOT LIKE 'Sticker |%'
+           AND s.name NOT LIKE '%Capsule%'
+           AND s.name NOT LIKE '%Graffiti%'
+           AND s.name NOT LIKE 'Patch |%'
+           AND s.name NOT LIKE 'Music Kit%'
+           AND s.name NOT LIKE 'Pin |%'
+           AND s.name NOT LIKE '%Slab%'
          ORDER BY mp.price DESC
          LIMIT 500`,
         []
@@ -222,7 +230,15 @@ router.get('/feed', optionalAuthMiddleware, async (req: Request, res: Response, 
        FROM market_prices mp
        JOIN skins s ON mp.skin_id = s.id
        JOIN markets m ON m.id = mp.market_id
-       WHERE mp.price > 0.50 AND mp.last_updated > NOW() - INTERVAL '2 hours'
+       WHERE mp.price > 5
+         AND mp.last_updated > NOW() - INTERVAL '2 hours'
+         AND s.name NOT LIKE 'Sticker |%'
+         AND s.name NOT LIKE '%Capsule%'
+         AND s.name NOT LIKE '%Graffiti%'
+         AND s.name NOT LIKE 'Patch |%'
+         AND s.name NOT LIKE 'Music Kit%'
+         AND s.name NOT LIKE 'Pin |%'
+         AND s.name NOT LIKE '%Slab%'
        ORDER BY mp.last_updated DESC
        LIMIT $1`,
       [limit]

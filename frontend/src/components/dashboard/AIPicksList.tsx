@@ -17,9 +17,14 @@ interface AIPick {
   minFloat: number;
   maxFloat: number;
   arbitrageProfit?: number;
+  arbitrageMarkets?: string;
   predicted7d?: number;
   volumeChange?: number;
   priceVsAvg?: number;
+  markets?: { name: string; price: number; url: string }[];
+  cheapestMarket?: string;
+  cheapestPrice?: number;
+  buyUrl?: string;
 }
 
 const CATEGORY_CONFIG = {
@@ -64,6 +69,7 @@ const CATEGORY_CONFIG = {
 const AIPicksList: React.FC = () => {
   const [picks, setPicks] = useState<AIPick[]>([]);
   const [loading, setLoading] = useState(true);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
 
   useEffect(() => {
     let mounted = true;
@@ -117,69 +123,173 @@ const AIPicksList: React.FC = () => {
           const config = CATEGORY_CONFIG[pick.category] || CATEGORY_CONFIG.undervalued;
           const CategoryIcon = config.icon;
 
+          const isExpanded = expandedId === pick.skinId;
+
           return (
             <div
               key={pick.skinId + '-' + idx}
-              className={`glass-panel-subtle p-4 group hover:${config.border} transition-all duration-300 cursor-pointer`}
+              className={`glass-panel-subtle group transition-all duration-300 cursor-pointer ${isExpanded ? config.border + ' border' : ''}`}
+              onClick={() => setExpandedId(isExpanded ? null : pick.skinId)}
             >
-              {/* Header: name + category badge + score */}
-              <div className="flex items-start justify-between mb-2">
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm text-white font-semibold truncate group-hover:text-gold-300 transition-colors">
-                    {pick.name}
-                  </p>
-                  <div className="flex items-center gap-2 mt-1">
-                    <span className="text-xs font-mono text-gray-400">
-                      <AnimatedNumber value={pick.currentPrice} prefix="$" decimals={2} duration={600} />
-                    </span>
-                    <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${config.bg} ${config.color}`}>
-                      <CategoryIcon className="w-2.5 h-2.5" />
-                      {config.label}
-                    </span>
+              <div className="p-4">
+                {/* Header: name + category badge + score */}
+                <div className="flex items-start justify-between mb-2">
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm text-white font-semibold truncate group-hover:text-gold-300 transition-colors">
+                      {pick.name}
+                    </p>
+                    <div className="flex items-center gap-2 mt-1">
+                      <span className="text-xs font-mono text-gray-400">
+                        <AnimatedNumber value={pick.currentPrice} prefix="$" decimals={2} duration={600} />
+                      </span>
+                      <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wider ${config.bg} ${config.color}`}>
+                        <CategoryIcon className="w-2.5 h-2.5" />
+                        {config.label}
+                      </span>
+                    </div>
+                  </div>
+                  <div className="text-right ml-2">
+                    <div className="text-lg font-bold font-mono text-gold-400">
+                      <AnimatedNumber value={pick.aiScore} decimals={0} duration={600} />
+                    </div>
+                    <div className="text-[9px] text-gray-500 uppercase tracking-wider">
+                      {pick.confidence >= 80 ? 'High' : pick.confidence >= 60 ? 'Med' : 'Low'}
+                    </div>
                   </div>
                 </div>
-                <div className="text-right ml-2">
-                  <div className="text-lg font-bold font-mono text-gold-400">
-                    <AnimatedNumber value={pick.aiScore} decimals={0} duration={600} />
-                  </div>
-                  <div className="text-[9px] text-gray-500 uppercase tracking-wider">
-                    {pick.confidence >= 80 ? 'High' : pick.confidence >= 60 ? 'Med' : 'Low'}
-                  </div>
-                </div>
-              </div>
 
-              {/* Reasoning tags */}
-              <div className="flex flex-wrap gap-1 mb-2">
-                {pick.reasons.slice(0, 3).map((reason, i) => (
-                  <span
-                    key={i}
-                    className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-gray-400 border border-white/[0.06]"
-                  >
-                    {reason}
+                {/* Reasoning tags */}
+                <div className="flex flex-wrap gap-1 mb-2">
+                  {pick.reasons.slice(0, 3).map((reason, i) => (
+                    <span
+                      key={i}
+                      className="text-[9px] font-mono px-1.5 py-0.5 rounded bg-white/[0.04] text-gray-400 border border-white/[0.06]"
+                    >
+                      {reason}
+                    </span>
+                  ))}
+                </div>
+
+                {/* Score bar */}
+                <div className="relative">
+                  <div className="w-full bg-carbon-900/80 rounded-full h-1.5">
+                    <div
+                      className="h-1.5 rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.min(pick.aiScore, 100)}%`,
+                        background: config.gradient,
+                        boxShadow: `0 0 8px ${config.glow}`,
+                      }}
+                    ></div>
+                  </div>
+                </div>
+
+                <div className="flex items-center justify-between mt-2">
+                  <span className={`text-[10px] font-bold uppercase tracking-wider ${config.color}`}>
+                    {pick.recommendation}
                   </span>
-                ))}
-              </div>
-
-              {/* Score bar */}
-              <div className="relative">
-                <div className="w-full bg-carbon-900/80 rounded-full h-1.5">
-                  <div
-                    className="h-1.5 rounded-full transition-all duration-500"
-                    style={{
-                      width: `${Math.min(pick.aiScore, 100)}%`,
-                      background: config.gradient,
-                      boxShadow: `0 0 8px ${config.glow}`,
-                    }}
-                  ></div>
+                  <ArrowUpRight className={`w-3 h-3 transition-transform duration-200 ${isExpanded ? 'rotate-90 text-gold-400' : 'text-gray-600 group-hover:text-gold-400/50'}`} />
                 </div>
               </div>
 
-              <div className="flex items-center justify-between mt-2">
-                <span className={`text-[10px] font-bold uppercase tracking-wider ${config.color}`}>
-                  {pick.recommendation}
-                </span>
-                <ArrowUpRight className="w-3 h-3 text-gray-600 group-hover:text-gold-400/50 transition-colors" />
-              </div>
+              {/* ─── Expanded Detail Panel ─── */}
+              {isExpanded && (
+                <div className="px-4 pb-4 border-t border-white/[0.04] pt-3 space-y-3" onClick={(e) => e.stopPropagation()}>
+
+                  {/* Why this pick — plain English explanation */}
+                  <div className="p-2.5 rounded-lg bg-white/[0.02] border border-white/[0.05]">
+                    <p className="text-[9px] text-gray-500 uppercase tracking-wider mb-1">Why this pick</p>
+                    <p className="text-[11px] text-gray-300 leading-relaxed">
+                      {pick.category === 'undervalued' && pick.priceVsAvg
+                        ? `This skin is currently trading ${Math.abs(pick.priceVsAvg).toFixed(0)}% below its 30-day average price. With ${pick.confidence >= 80 ? 'strong' : 'moderate'} trading volume, this suggests it's temporarily underpriced and likely to recover.`
+                        : pick.category === 'trending_up' && pick.predicted7d
+                        ? `Our prediction model estimates this skin will reach $${pick.predicted7d.toFixed(2)} within 7 days (+${((pick.predicted7d / pick.currentPrice - 1) * 100).toFixed(1)}%). The uptrend is supported by ${pick.reasons.length} converging signals.`
+                        : pick.category === 'arbitrage' && pick.arbitrageProfit
+                        ? `A $${pick.arbitrageProfit.toFixed(2)} profit opportunity exists right now. Buy on the cheaper market and sell on the more expensive one. This spread has been verified across live market data.`
+                        : pick.category === 'volume_spike' && pick.volumeChange
+                        ? `Trading volume surged ${pick.volumeChange.toFixed(0)}% above normal this week. Sudden volume spikes often precede price increases as demand outpaces supply.`
+                        : `Multiple market signals converged to flag this skin. Score: ${pick.aiScore}/100 with ${pick.confidence}% confidence.`
+                      }
+                    </p>
+                  </div>
+
+                  {/* Confidence breakdown */}
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="text-center p-2 rounded bg-white/[0.02]">
+                      <p className="text-[9px] text-gray-500 mb-0.5">AI Score</p>
+                      <p className={`text-sm font-bold font-mono ${pick.aiScore >= 80 ? 'text-emerald-400' : pick.aiScore >= 60 ? 'text-cyan-400' : 'text-gray-400'}`}>{pick.aiScore}/100</p>
+                    </div>
+                    <div className="text-center p-2 rounded bg-white/[0.02]">
+                      <p className="text-[9px] text-gray-500 mb-0.5">Confidence</p>
+                      <p className={`text-sm font-bold font-mono ${pick.confidence >= 80 ? 'text-emerald-400' : pick.confidence >= 60 ? 'text-amber-400' : 'text-red-400'}`}>{pick.confidence}%</p>
+                    </div>
+                    <div className="text-center p-2 rounded bg-white/[0.02]">
+                      <p className="text-[9px] text-gray-500 mb-0.5">Signals</p>
+                      <p className="text-sm font-bold font-mono text-cyan-400">{pick.reasons.length}</p>
+                    </div>
+                  </div>
+
+                  {/* Market prices */}
+                  {pick.markets && pick.markets.length > 0 && (
+                    <div>
+                      <p className="text-[9px] text-gray-500 uppercase tracking-wider mb-1.5">Market Prices (FN/MW/FT only)</p>
+                      <div className="space-y-1">
+                        {pick.markets.slice(0, 5).map((m, i) => (
+                          <div key={i} className="flex items-center justify-between">
+                            <span className="text-[11px] text-gray-400 font-mono truncate flex-1">{m.name}</span>
+                            <div className="flex items-center gap-2 ml-2">
+                              <span className={`text-[11px] font-mono font-bold ${i === 0 ? 'text-emerald-400' : 'text-gray-300'}`}>
+                                ${m.price.toFixed(2)}
+                              </span>
+                              <a
+                                href={m.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="text-[9px] px-1.5 py-0.5 rounded bg-cyan-glow/10 text-cyan-glow hover:bg-cyan-glow/20 transition-colors"
+                              >
+                                {i === 0 ? 'BUY' : 'VIEW'}
+                              </a>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Arbitrage info */}
+                  {pick.arbitrageMarkets && (
+                    <div className="flex items-center gap-2 text-[10px] font-mono">
+                      <span className="text-gray-500">Route:</span>
+                      <span className="text-amber-400">{pick.arbitrageMarkets}</span>
+                      {pick.arbitrageProfit && (
+                        <span className="text-emerald-400 font-bold">+${pick.arbitrageProfit.toFixed(2)}</span>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Prediction info */}
+                  {pick.predicted7d && pick.predicted7d !== pick.currentPrice && (
+                    <div className="flex items-center gap-2 text-[10px] font-mono">
+                      <span className="text-gray-500">7d Prediction:</span>
+                      <span className={pick.predicted7d > pick.currentPrice ? 'text-emerald-400' : 'text-red-400'}>
+                        ${pick.predicted7d.toFixed(2)} ({pick.predicted7d > pick.currentPrice ? '+' : ''}{((pick.predicted7d / pick.currentPrice - 1) * 100).toFixed(1)}%)
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Buy button */}
+                  {pick.buyUrl && (
+                    <a
+                      href={pick.buyUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="block w-full text-center py-2 mt-2 rounded text-xs font-bold uppercase tracking-wider bg-cyan-glow/10 text-cyan-glow border border-cyan-glow/20 hover:bg-cyan-glow/20 transition-colors"
+                    >
+                      Buy on {pick.cheapestMarket?.split(' (')[0] || 'Market'} — ${pick.cheapestPrice?.toFixed(2)}
+                    </a>
+                  )}
+                </div>
+              )}
             </div>
           );
         })}

@@ -9,12 +9,12 @@ export default defineConfig({
     port: 3000,
     proxy: {
       '/api': {
-        target: 'https://cs-skin-backend-production.up.railway.app',
+        target: process.env.VITE_API_URL || 'http://localhost:5000',
         changeOrigin: true,
-        secure: true,
+        secure: false,
       },
       '/socket.io': {
-        target: 'https://cs-skin-backend-production.up.railway.app',
+        target: process.env.VITE_API_URL || 'http://localhost:5000',
         changeOrigin: true,
         ws: true,
         secure: false,

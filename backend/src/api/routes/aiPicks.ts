@@ -25,6 +25,11 @@ interface AIPick {
   predicted7d?: number;
   volumeChange?: number;
   priceVsAvg?: number;
+  // Market prices for buy/sell info
+  markets?: { name: string; price: number; url: string }[];
+  cheapestMarket?: string;
+  cheapestPrice?: number;
+  buyUrl?: string;
 }
 
 /**
@@ -53,6 +58,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
        LEFT JOIN price_statistics ps ON ps.skin_id = s.id
        WHERE os.undervaluation_score >= 60
          AND ps.trading_volume_7d > 3
+         AND s.name NOT LIKE 'Sticker |%' AND s.name NOT LIKE '%Capsule%' AND s.name NOT LIKE '%Graffiti%'
+         AND (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) >= 5
        ORDER BY os.undervaluation_score DESC, os.overall_score DESC
        LIMIT 3`
     );
@@ -103,6 +110,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
        WHERE pp.trend_direction = 'up'
          AND pp.confidence_score >= 60
          AND pp.prediction_strength IN ('strong', 'moderate')
+         AND s.name NOT LIKE 'Sticker |%' AND s.name NOT LIKE '%Capsule%' AND s.name NOT LIKE '%Graffiti%'
+         AND (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) >= 5
        ORDER BY pp.confidence_score DESC, pp.predicted_price DESC
        LIMIT 3`
     );
@@ -150,9 +159,10 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
        JOIN skins s ON s.id = ao.skin_id
        LEFT JOIN markets m1 ON m1.id = ao.source_market_id
        LEFT JOIN markets m2 ON m2.id = ao.target_market_id
-       WHERE ao.net_profit > 0
+       WHERE ao.net_profit > 5
          AND ao.liquidity_score >= 50
-       ORDER BY ao.roi DESC
+         AND s.name NOT LIKE 'Sticker |%' AND s.name NOT LIKE '%Capsule%' AND s.name NOT LIKE '%Graffiti%'
+       ORDER BY ao.net_profit DESC
        LIMIT 3`
     );
 
@@ -200,6 +210,8 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
        WHERE ps.trading_volume_7d > 10
          AND ps.trading_volume_30d > 0
          AND (ps.trading_volume_7d::float / GREATEST(ps.trading_volume_30d::float / 4.3, 1)) > 1.5
+         AND s.name NOT LIKE 'Sticker |%' AND s.name NOT LIKE '%Capsule%' AND s.name NOT LIKE '%Graffiti%'
+         AND (SELECT MIN(mp.price) FROM market_prices mp WHERE mp.skin_id = s.id AND mp.price > 0) >= 5
        ORDER BY (ps.trading_volume_7d::float / GREATEST(ps.trading_volume_30d::float / 4.3, 1)) DESC
        LIMIT 3`
     );
@@ -234,8 +246,19 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
       });
     }
 
-    // ─── Filter out picks with no price data ───
-    const validPicks = picks.filter(p => p.currentPrice > 0);
+    // ─── Filter out low-value, undesirable, and non-weapon items ───
+    const validPicks = picks.filter(p => {
+      if (p.currentPrice < 5) return false; // No penny skins
+      const nameLower = p.name.toLowerCase();
+      if (nameLower.startsWith('sticker |')) return false;
+      if (nameLower.includes('capsule')) return false;
+      if (nameLower.includes('graffiti')) return false;
+      if (nameLower.includes('patch |')) return false;
+      if (nameLower.includes('music kit')) return false;
+      if (nameLower.includes('pin |')) return false;
+      if (nameLower.includes('agent |') || nameLower.includes('| swat') || nameLower.includes('| seal') || nameLower.includes('farlow')) return false; // Agent skins — low demand
+      return true;
+    });
 
     // ─── Deduplicate by skinId (keep highest aiScore) ───
     const seen = new Map<number, AIPick>();
@@ -248,6 +271,55 @@ router.get('/', async (req: Request, res: Response, next: NextFunction) => {
     const dedupedPicks = Array.from(seen.values())
       .sort((a, b) => b.aiScore - a.aiScore)
       .slice(0, 8);
+
+    // ─── Enrich each pick with market prices + buy/sell URLs ───
+    // Prioritize FN > MW > FT. Skip WW and BS — low demand, bad resale.
+    const EXTERIOR_PRIORITY: Record<string, number> = {
+      'Factory New': 1, 'Minimal Wear': 2, 'Field-Tested': 3,
+      'Well-Worn': 99, 'Battle-Scarred': 99,
+    };
+
+    for (const pick of dedupedPicks) {
+      try {
+        const marketPrices = await queryMany(
+          `SELECT mp.price, mp.exterior, m.display_name, mp.direct_url
+           FROM market_prices mp
+           JOIN markets m ON m.id = mp.market_id
+           WHERE mp.skin_id = $1 AND mp.price > 0
+             AND (mp.exterior IS NULL OR mp.exterior NOT IN ('Well-Worn', 'Battle-Scarred'))
+           ORDER BY mp.price ASC
+           LIMIT 10`,
+          [pick.skinId]
+        );
+
+        if (marketPrices.length > 0) {
+          pick.markets = marketPrices.map((mp: any) => {
+            const mName = (mp.display_name || '').toLowerCase();
+            const skinSlug = pick.name.replace(/\s*\|.*/, '').trim().toLowerCase().replace(/[^a-z0-9]+/g, '-');
+            const skinQuery = encodeURIComponent(pick.name);
+            let url = mp.direct_url || '';
+
+            if (!url) {
+              if (mName.includes('steam')) url = `https://steamcommunity.com/market/listings/730/${skinQuery}`;
+              else if (mName.includes('skinport')) url = `https://skinport.com/market?search=${skinQuery}&sort=price&order=asc`;
+              else if (mName.includes('float')) url = `https://csfloat.com/search?market_hash_name=${skinQuery}`;
+              else url = `https://www.google.com/search?q=${skinQuery}+buy`;
+            }
+
+            return {
+              name: `${mp.display_name}${mp.exterior ? ' (' + mp.exterior + ')' : ''}`,
+              price: parseFloat(mp.price),
+              url,
+            };
+          });
+
+          const cheapest = pick.markets[0];
+          pick.cheapestMarket = cheapest.name;
+          pick.cheapestPrice = cheapest.price;
+          pick.buyUrl = cheapest.url;
+        }
+      } catch { /* skip enrichment on error */ }
+    }
 
     // Cache for 30 seconds
     await cacheSet(cacheKey, JSON.stringify(dedupedPicks), 30);

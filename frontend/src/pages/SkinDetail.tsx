@@ -349,8 +349,18 @@ const SkinDetail: React.FC = () => {
     setSkinLoading(true);
     skinsApi.getById(id)
       .then((res) => {
-        if (res.data) {
-          setSkin(res.data);
+        // API returns { success, data: { skin, marketPrices, priceStatistics, prediction } }
+        const payload = res.data?.data || res.data;
+        if (payload?.skin) {
+          // Flatten: merge skin fields + attach marketPrices etc at top level
+          setSkin({
+            ...payload.skin,
+            marketPrices: payload.marketPrices || [],
+            priceStatistics: payload.priceStatistics || null,
+            prediction: payload.prediction || null,
+          });
+        } else if (payload) {
+          setSkin(payload);
         }
       })
       .catch(() => {
@@ -430,16 +440,18 @@ const SkinDetail: React.FC = () => {
 
   // ── Resolved data (real API data only — no mock fallbacks) ──
   const s = skin || {} as any;
-  const weaponName = s.weapon_name || s.weapon || 'Unknown';
-  const skinName = s.skin_name || s.skinName || 'Unknown';
+  // Parse weapon + skin name from full name ("AK-47 | Redline" → weapon: "AK-47", skin: "Redline")
+  const nameParts = (s.name || '').split(' | ');
+  const weaponName = s.weapon_name || s.weapon || nameParts[0] || 'Unknown';
+  const skinName = s.skin_name || s.skinName || nameParts[1] || s.name || 'Unknown';
   const rarity = s.rarity || 'Unknown';
   const rarityColor = s.rarity_color || s.rarityColor || '#6b7280';
   const collection = s.collection || s.case_name || '';
   const exterior = s.exterior || '';
   const floatValue = s.float_value ?? s.floatValue ?? null;
-  const floatMin = s.float_min ?? s.floatMin ?? 0.0;
-  const floatMax = s.float_max ?? s.floatMax ?? 1.0;
-  const currentPrice = s.current_price ?? s.currentPrice ?? 0;
+  const floatMin = s.float_min ?? s.floatMin ?? s.min_float ?? 0.0;
+  const floatMax = s.float_max ?? s.floatMax ?? s.max_float ?? 1.0;
+  const currentPrice = parseFloat(s.current_price ?? s.currentPrice ?? 0);
   const changePct = s.change_24h ?? s.changePct24h ?? 0;
   const priceChange = s.price_change_24h ?? s.change24h ?? 0;
   const volume24h = s.volume_24h ?? s.volume24h ?? 0;
@@ -448,21 +460,31 @@ const SkinDetail: React.FC = () => {
   const ath = s.all_time_high ?? s.allTimeHigh ?? null;
   const atl = s.all_time_low ?? s.allTimeLow ?? null;
 
-  // ── Market data (real only) ──
-  const markets = livePrices.length > 0
-    ? livePrices.map((p: any) => {
-        const info = MARKET_ID_MAP[p.market_id] || { name: `Market ${p.market_id}`, logo: '\u{2B1C}', fee: 5.0 };
-        return {
-          market_id: p.market_id,
-          name: info.name,
-          logo: info.logo,
-          price: p.price,
-          volume: p.volume ?? 0,
-          fee: info.fee,
-          last_updated: p.last_updated,
-        };
-      })
-    : [];
+  // ── Market data (live WebSocket → fallback to API response) ──
+  const rawMarketData = livePrices.length > 0
+    ? livePrices
+    : (s.marketPrices || []).map((mp: any) => ({
+        market_id: mp.market_id,
+        price: parseFloat(mp.price) || 0,
+        volume: mp.volume ?? 0,
+        last_updated: mp.last_updated,
+        exterior: mp.exterior,
+      }));
+
+  const markets = rawMarketData
+    .filter((p: any) => p.price > 0)
+    .map((p: any) => {
+      const info = MARKET_ID_MAP[p.market_id] || { name: `Market ${p.market_id}`, logo: '\u{2B1C}', fee: 5.0 };
+      return {
+        market_id: p.market_id,
+        name: info.name + (p.exterior ? ` (${p.exterior})` : ''),
+        logo: info.logo,
+        price: typeof p.price === 'string' ? parseFloat(p.price) : p.price,
+        volume: p.volume ?? 0,
+        fee: info.fee,
+        last_updated: p.last_updated,
+      };
+    });
 
   const bestMarket = markets.length > 0
     ? markets.reduce((best, m) => {
@@ -475,24 +497,29 @@ const SkinDetail: React.FC = () => {
   // ── Chart data (real only) ──
   const chartData = priceHistory.length >= 2 ? priceHistory : [];
 
-  // ── AI Analysis (real only — no fake scores) ──
-  const analysis = aiAnalysis || {} as any;
-  const oppScore = analysis.opportunityScore ?? analysis.opportunity_score ?? null;
+  // ── AI Analysis (from /analysis endpoint OR embedded prediction from skin detail) ──
+  const analysis = aiAnalysis || s.prediction || {} as any;
+  const oppScore = analysis.opportunityScore ?? analysis.opportunity_score ?? s.opportunity_score ?? null;
   const recommendation = analysis.recommendation ?? null;
-  const confidence = analysis.confidence ?? null;
-  const predicted7d = analysis.predictedPrice7d ?? analysis.predicted_price_7d ?? null;
+  const confidence = analysis.confidence ?? analysis.confidence_score ?? null;
+  const predicted7d = analysis.predictedPrice7d ?? analysis.predicted_price_7d ?? analysis.predicted_price ?? null;
   const predicted30d = analysis.predictedPrice30d ?? analysis.predicted_price_30d ?? null;
   const reasons = analysis.reasons ?? analysis.key_signals ?? [];
 
-  // ── Technicals (real only) ──
-  const tech = aiAnalysis?.technicals || aiAnalysis || {};
-  const ma7d = tech.ma7d ?? tech.ma_7d ?? null;
-  const ma30d = tech.ma30d ?? tech.ma_30d ?? null;
-  const volatility = tech.volatility ?? null;
+  // ── Technicals (from analysis or prediction) ──
+  const tech = aiAnalysis?.technicals || analysis || {};
+  const ma7d = tech.ma7d ?? tech.ma_7d ?? tech.moving_avg_7d ?? null;
+  const ma30d = tech.ma30d ?? tech.ma_30d ?? tech.moving_avg_30d ?? null;
+  const volatility = tech.volatility ?? tech.volatility_forecast ?? null;
   const trendDirection = tech.trendDirection ?? tech.trend_direction ?? null;
   const rsi = tech.rsi ?? null;
   const support = tech.support ?? null;
   const resistance = tech.resistance ?? null;
+
+  // ── Price stats from API ──
+  const stats = s.priceStatistics || {};
+  const high24hCalc = high24h ?? (stats.max_price_7d ? parseFloat(stats.max_price_7d) : null);
+  const low24hCalc = low24h ?? (stats.min_price_7d ? parseFloat(stats.min_price_7d) : null);
 
   // ── Time since last refresh ──
   const [secondsAgo, setSecondsAgo] = useState(0);

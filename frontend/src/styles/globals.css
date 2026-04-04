@@ -211,14 +211,15 @@ svg path {
   display: flex;
   gap: 0;
   width: max-content;
-  animation: marqueeScroll 280s linear infinite;
   will-change: transform;
-  transform: translateZ(0);
+  transform: translate3d(0, 0, 0);
   backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
 }
 
-.ticker-marquee:hover {
-  animation-play-state: paused;
+@keyframes tickerSlide {
+  0% { transform: translate3d(0, 0, 0); }
+  100% { transform: translate3d(-50%, 0, 0); }
 }
 
 .ticker-marquee-item {
